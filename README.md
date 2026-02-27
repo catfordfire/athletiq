@@ -9,7 +9,6 @@ No subscription fees. No third parties. Your data stays on your hardware.
 ## Features
 
 - 📊 **Dashboard** — total distance, elevation, time, PRs, activity breakdowns
-- 📈 **Fitness/Form Curves** — CTL, ATL, TSB (like TrainingPeaks)
 - 📋 **Activity Log** — paginated, searchable, filterable by sport & year
 - 🗓️ **Year-on-Year Analytics** — monthly bars, yearly progression
 - 🏅 **Personal Records** — best paces by distance
