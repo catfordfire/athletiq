@@ -1,0 +1,85 @@
+version: "3.8"
+
+# ═══════════════════════════════════════════════════════════════
+#  Athletiq – Self-hosted Strava Analytics
+#  Compatible with Synology Container Manager (DSM 7+)
+#
+#  NETWORKING NOTES:
+#  - backend + db use network_mode: host so the backend container
+#    can reach the Strava API through the NAS network stack.
+#    DATABASE_URL uses localhost (not 'db') for the same reason.
+#  - frontend uses bridge networking (just serves static files).
+#    It has NO depends_on so it stays up even if backend restarts.
+# ═══════════════════════════════════════════════════════════════
+
+services:
+
+  # ── PostgreSQL Database ───────────────────────────────────────
+  # Must start before backend; backend connects to localhost:5432
+  db:
+    image: postgres:15-alpine
+    container_name: athletiq-db
+    restart: always
+    environment:
+      POSTGRES_USER: velosyno
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-athletiq_pass}
+      POSTGRES_DB: athletiq
+    network_mode: host
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U velosyno"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    labels:
+      - "com.athletiq.service=database"
+
+  # ── API Backend ───────────────────────────────────────────────
+  # network_mode: host gives it direct internet access via the NAS
+  # BACKEND_PORT env var controls which port uvicorn listens on
+  backend:
+    build:
+      context: ./backend
+    image: athletiq-backend:latest
+    container_name: athletiq-backend
+    restart: always
+    environment:
+      STRAVA_CLIENT_ID: ${STRAVA_CLIENT_ID}
+      STRAVA_CLIENT_SECRET: ${STRAVA_CLIENT_SECRET}
+      APP_URL: ${APP_URL:-http://localhost:3000}
+      BACKEND_URL: ${BACKEND_URL:-http://localhost:8888}
+      BACKEND_PORT: ${BACKEND_PORT:-8888}
+      DATABASE_URL: postgresql://velosyno:${DB_PASSWORD:-athletiq_pass}@localhost:5432/athletiq
+    network_mode: host
+    volumes:
+      - ./data/uploads:/app/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+    labels:
+      - "com.athletiq.service=backend"
+
+  # ── React Frontend ────────────────────────────────────────────
+  # Serves pre-built static files via nginx — no Node.js at runtime
+  # VITE_API_URL is baked in at build time (points to NAS IP:port)
+  # restart: always + NO depends_on = stays up regardless of backend
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${BACKEND_URL:-http://localhost:8888}
+    image: athletiq-frontend:latest
+    container_name: athletiq-frontend
+    restart: always
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+    networks:
+      - athletiq
+    labels:
+      - "com.athletiq.service=frontend"
+
+networks:
+  athletiq:
+    driver: bridge
+    name: athletiq_network
