@@ -1,6 +1,6 @@
 # 🏃 Athletiq
 
-**Self-hosted Strava analytics on your Synology NAS — a Veloviewer alternative you own.**
+**Self-hosted Strava analytics on your Docker — a Veloviewer alternative you own.**
 
 No subscription fees. No third parties. Your data stays on your hardware.
 
