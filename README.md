@@ -24,7 +24,7 @@ A privacy-first alternative to Veloviewer — all your training data, owned by y
 | 📉 **Progression** | Scatter plot of pace over time, multi-route map overlay, time period filtering |
 | 🏅 **Race History** | Filter by distance preset or custom range, count summary, best pace highlighting |
 | 📋 **Activities** | Paginated activity log with year/sport filters |
-| 🗺️ **Activity modal** | Leaflet map of your route, GPX download |
+| 🗺️ **Activity detail** | Route map, tabbed km splits, best efforts with PR medals, activity description, GPX download |
 | ⬇ **Export** | Full CSV export of all activities |
 
 **Everything runs on your own hardware.** No third-party servers, no subscriptions, no ads.
@@ -32,9 +32,10 @@ A privacy-first alternative to Veloviewer — all your training data, owned by y
 ---
 
 ## 🏗 Architecture
+
 ```
 ┌─────────────────────────────────────────────┐
-│  Synology NAS (or any Docker host)           │
+│  Synology NAS                                │
 │                                              │
 │  ┌──────────────┐    ┌──────────────────┐   │
 │  │   Frontend   │    │     Backend      │   │
@@ -44,9 +45,11 @@ A privacy-first alternative to Veloviewer — all your training data, owned by y
 │                               │              │
 │                      ┌────────▼─────────┐   │
 │                      │    PostgreSQL     │   │
+│                      │   Port 5432      │   │
 │                      └──────────────────┘   │
 │                               │              │
 └───────────────────────────────┼─────────────┘
+                                │ Strava API
                                 ▼
                       strava.com/api/v3
 ```
@@ -60,8 +63,8 @@ A privacy-first alternative to Veloviewer — all your training data, owned by y
 
 ## 📋 Requirements
 
-- Synology NAS running **DSM 7+** (or any Linux host with Docker)
-- **Container Manager** package installed
+- Synology NAS running **DSM 7+**
+- **Container Manager** package installed (formerly Docker)
 - Strava account with API access
 
 ---
@@ -76,14 +79,22 @@ A privacy-first alternative to Veloviewer — all your training data, owned by y
 4. Note your **Client ID** and **Client Secret**
 
 ### 2. Clone and Configure
+
 ```bash
-git clone https://github.com/catfordfire/athletiq.git /volume1/docker/athletiq
+# SSH into your NAS
+ssh admin@192.168.1.100
+
+# Clone the repo
+git clone https://github.com/yourusername/athletiq.git /volume1/docker/athletiq
 cd /volume1/docker/athletiq
+
+# Copy and edit the environment file
 cp .env.example .env
 vi .env
 ```
 
 Fill in your `.env`:
+
 ```env
 STRAVA_CLIENT_ID=your_client_id
 STRAVA_CLIENT_SECRET=your_client_secret
@@ -96,13 +107,14 @@ DB_PASSWORD=choose_a_strong_password
 ```
 
 ### 3. Build and Run
+
 ```bash
 docker compose up -d --build
 ```
 
 ### 4. Connect Strava
 
-Open `http://YOUR_NAS_IP:3000` and click **Connect with Strava**. Your activities will begin syncing — this may take a few minutes if you have years of history.
+Open `http://YOUR_NAS_IP:3000` in your browser and click **Connect with Strava**. Your activities will begin syncing immediately — this may take a few minutes if you have years of history.
 
 ---
 
@@ -132,24 +144,28 @@ Set up a scheduled task in **DSM → Control Panel → Task Scheduler**:
 - **Type**: User-defined script
 - **Schedule**: Daily at 02:00
 - **Command**:
-```bash
+  ```bash
   curl -s -X POST http://localhost:YOUR_BACKEND_PORT/api/sync/YOUR_ATHLETE_ID
-```
+  ```
 
-Your athlete ID appears in the URL after you first connect: `strava.com/athletes/XXXXXX`
+Your athlete ID appears in the URL after you first connect — or find it at `strava.com/athletes/XXXXXX`.
 
 ---
 
 ## 📡 API Endpoints
 
-The backend exposes a REST API — full interactive docs at `http://NAS_IP:BACKEND_PORT/docs`
+The backend exposes a REST API at `http://NAS_IP:BACKEND_PORT`:
 
 | Endpoint | Description |
 |---|---|
+| `GET /docs` | Interactive API documentation |
 | `GET /api/athlete/{id}` | Athlete profile |
 | `GET /api/activities/{id}` | Paginated activity list |
 | `GET /api/stats/{id}` | Aggregate statistics |
+| `GET /api/fitness/{id}` | CTL/ATL/TSB fitness data |
 | `POST /api/sync/{id}` | Trigger activity sync |
+| `GET /api/status/{id}` | Sync status |
+| `GET /api/activity/{id}/{activity_id}/detail` | Km splits, best efforts, description (cached) |
 | `GET /api/activity/{id}/{activity_id}/gpx` | Download GPX file |
 | `GET /api/export/{id}/csv` | Export all activities as CSV |
 
@@ -157,34 +173,37 @@ The backend exposes a REST API — full interactive docs at `http://NAS_IP:BACKE
 
 ## 🔒 Security Notes
 
-- Designed for **local network use**. If exposing externally, put it behind a reverse proxy with authentication.
-- Strava tokens are stored in local PostgreSQL — they never leave your network.
-- Use a strong `DB_PASSWORD`.
-- Never commit your `.env` file — it's in `.gitignore`.
+- Athletiq is designed for **local network use**. If you expose it to the internet, consider putting it behind a reverse proxy with authentication.
+- Your Strava tokens are stored in the local PostgreSQL database — they never leave your network.
+- Use a strong `DB_PASSWORD` — even on a local network.
+- Never commit your `.env` file — it's in `.gitignore` by default.
 
 ---
 
 ## 🗺 External Access
 
-1. Forward `FRONTEND_PORT` and `BACKEND_PORT` on your router to your NAS IP
-2. Update `APP_URL` and `BACKEND_URL` in `.env` to your external IP or domain
-3. Update **Authorization Callback Domain** in Strava API settings
-4. Rebuild: `docker compose up -d --build frontend`
+If you want to access Athletiq outside your home network:
 
-For best security, use Synology's built-in **Reverse Proxy** with HTTPS.
+1. Forward both `FRONTEND_PORT` and `BACKEND_PORT` on your router to your NAS IP
+2. Update `APP_URL` and `BACKEND_URL` in `.env` to use your external IP or domain
+3. Update the **Authorization Callback Domain** in your Strava API settings to match
+4. Rebuild the frontend: `docker compose up -d --build frontend`
+
+For best security, use Synology's built-in **Reverse Proxy** (Control Panel → Login Portal → Advanced) with a domain and HTTPS certificate.
 
 ---
 
 ## 🛠 Troubleshooting
 
 **Backend can't reach Strava API**
-The backend uses `network_mode: host`. Check DSM firewall under Control Panel → Security → Firewall.
-
-**Frontend shows blank page**
-`VITE_API_URL` is baked in at build time. If you change `BACKEND_URL`, rebuild: `docker compose up -d --build frontend`
+The backend uses `network_mode: host` for this reason. If you're still having issues, check DSM's firewall settings under Control Panel → Security → Firewall.
 
 **Activities not syncing**
-Check logs: `docker compose logs -f backend`
+Check the backend logs: `docker compose logs -f backend`
+Verify your access token is valid: `docker exec -it athletiq-db psql -U velosyno -d athletiq -c "SELECT athlete_id, expires_at FROM tokens;"`
+
+**Frontend shows blank page**
+The `VITE_API_URL` is baked in at build time. If you change `BACKEND_URL` in `.env`, rebuild the frontend: `docker compose up -d --build frontend`
 
 **Port conflicts**
 Change `FRONTEND_PORT` and/or `BACKEND_PORT` in `.env` and rebuild.
@@ -192,13 +211,14 @@ Change `FRONTEND_PORT` and/or `BACKEND_PORT` in `.env` and rebuild.
 ---
 
 ## 📁 Project Structure
+
 ```
 athletiq/
 ├── backend/
 │   ├── main.py          # FastAPI application
 │   ├── requirements.txt
 │   ├── Dockerfile
-│   └── entrypoint.sh
+│   └── entrypoint.sh    # Reads BACKEND_PORT at runtime
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx      # Main React application
@@ -207,14 +227,14 @@ athletiq/
 │   ├── package.json
 │   ├── vite.config.js
 │   ├── nginx.conf
-│   └── Dockerfile
+│   └── Dockerfile       # Multi-stage: node build → nginx serve
 ├── scripts/
-│   ├── setup.sh
-│   └── update.sh
+│   ├── setup.sh         # Interactive first-time setup
+│   └── update.sh        # Pull latest and rebuild
 ├── docker-compose.yml
 ├── .env.example
 ├── .gitignore
-├── LICENSE
+├── CHANGELOG.md
 └── README.md
 ```
 
@@ -222,14 +242,18 @@ athletiq/
 
 ## 🤝 Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for details and [CHANGELOG.md](CHANGELOG.md) for what's changed.
 
 Ideas for future features:
+
 - 🎯 Annual distance goal tracker
 - 👟 Shoe/gear mileage tracker
 - 📊 Year vs year comparison
 - 🏆 Age grade calculator
 - 📧 Weekly summary email digest
+- 🗺 Full heatmap of all routes
+
+Please open an issue before starting significant work so we can discuss approach.
 
 ---
 
