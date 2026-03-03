@@ -11,7 +11,7 @@ from typing import Optional, List
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from sqlalchemy import create_engine, Column, Integer, Float, String, DateTime, Boolean, Text, JSON
+from sqlalchemy import create_engine, Column, Integer, BigInteger, Float, String, DateTime, Boolean, Text, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import StaticPool
@@ -50,7 +50,7 @@ class TokenStore(Base):
 
 class Activity(Base):
     __tablename__ = "activities"
-    id = Column(Integer, primary_key=True)
+    id = Column(BigInteger, primary_key=True)
     athlete_id = Column(Integer)
     name = Column(String)
     sport_type = Column(String)
@@ -74,6 +74,10 @@ class Activity(Base):
     commute = Column(Boolean, default=False)
     map_summary_polyline = Column(Text, nullable=True)
     raw_data = Column(Text)  # full JSON
+    description = Column(Text, nullable=True)
+    splits_metric = Column(Text, nullable=True)   # JSON array of km splits
+    best_efforts = Column(Text, nullable=True)    # JSON array of best efforts
+    detail_fetched = Column(Boolean, default=False)
 
 
 Base.metadata.create_all(bind=engine)
@@ -638,5 +642,77 @@ def export_csv(athlete_id: int):
             media_type="text/csv",
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+    finally:
+        db.close()
+
+
+@app.get("/api/activity/{athlete_id}/{activity_id}/detail")
+async def get_activity_detail(athlete_id: int, activity_id: int):
+    """Fetch detailed activity data (splits, best efforts, description) from Strava.
+    Results are cached in the DB so Strava is only called once per activity."""
+    db = SessionLocal()
+    try:
+        act = db.query(Activity).filter_by(id=activity_id, athlete_id=athlete_id).first()
+        if not act:
+            raise HTTPException(404, "Activity not found")
+
+        # Return cached detail if already fetched
+        if act.detail_fetched:
+            return {
+                "description": act.description,
+                "splits_metric": json.loads(act.splits_metric) if act.splits_metric else [],
+                "best_efforts": json.loads(act.best_efforts) if act.best_efforts else [],
+            }
+
+        # Fetch detailed activity from Strava
+        access_token = await get_valid_token(athlete_id, db)
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{STRAVA_API_BASE}/activities/{activity_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        if resp.status_code == 429:
+            raise HTTPException(429, "Strava rate limit reached — please try again in a minute")
+        if resp.status_code != 200:
+            raise HTTPException(502, f"Strava API error: {resp.status_code}")
+
+        data = resp.json()
+
+        # Extract and clean splits
+        splits = []
+        for s in data.get("splits_metric", []):
+            splits.append({
+                "split": s.get("split"),
+                "distance": s.get("distance"),
+                "moving_time": s.get("moving_time"),
+                "elapsed_time": s.get("elapsed_time"),
+                "elevation_difference": s.get("elevation_difference"),
+                "average_heartrate": s.get("average_heartrate"),
+                "pace_zone": s.get("pace_zone"),
+            })
+
+        # Extract and clean best efforts
+        best_efforts = []
+        for b in data.get("best_efforts", []):
+            best_efforts.append({
+                "name": b.get("name"),
+                "elapsed_time": b.get("elapsed_time"),
+                "distance": b.get("distance"),
+                "pr_rank": b.get("pr_rank"),
+            })
+
+        # Cache in DB
+        act.description = data.get("description") or ""
+        act.splits_metric = json.dumps(splits)
+        act.best_efforts = json.dumps(best_efforts)
+        act.detail_fetched = True
+        db.commit()
+
+        return {
+            "description": act.description,
+            "splits_metric": splits,
+            "best_efforts": best_efforts,
+        }
     finally:
         db.close()

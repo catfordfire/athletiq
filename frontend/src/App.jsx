@@ -235,9 +235,27 @@ function ActivityMap({ polyline, activityId }) {
   return <div ref={mapRef} style={{ height: 240, borderRadius: 12, overflow: "hidden", marginBottom: 20 }} />;
 }
 
-function ActivityModal({ act, athleteId, onClose }) {
+function ActivityModal({ act, athleteId, onClose, onOpenDetail }) {
   const [gpxLoading, setGpxLoading] = useState(false);
-  const [mapExpanded, setMapExpanded] = useState(true);
+  const [tab, setTab] = useState("overview");
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  useEffect(() => {
+    setTab("overview");
+    setDetail(null);
+  }, [act?.id]);
+
+  useEffect(() => {
+    if ((tab === "splits" || tab === "efforts") && !detail && act) {
+      setDetailLoading(true);
+      fetch(`${API}/api/activity/${athleteId}/${act.id}/detail`)
+        .then(r => r.json())
+        .then(d => setDetail(d))
+        .catch(() => setDetail({ error: true }))
+        .finally(() => setDetailLoading(false));
+    }
+  }, [tab, act, athleteId, detail]);
 
   if (!act) return null;
   const running = isRun(act.sport_type);
@@ -261,83 +279,388 @@ function ActivityModal({ act, athleteId, onClose }) {
     }
   };
 
+  // Pace colour: green = fast, red = slow relative to average
+  const avgPaceSec = act.moving_time && act.distance ? act.moving_time / (act.distance / 1000) : null;
+  const splitPaceColor = (movingTime, distanceM) => {
+    if (!avgPaceSec || !movingTime || !distanceM) return "rgba(255,255,255,0.7)";
+    const splitPace = movingTime / (distanceM / 1000);
+    const diff = splitPace - avgPaceSec;
+    if (diff < -15) return "#00D4AA";
+    if (diff < 0) return "#7AE8D0";
+    if (diff < 15) return "#FFB347";
+    return "#FF6B6B";
+  };
+
+  const tabs = [
+    { id: "overview", label: "Overview" },
+    { id: "splits",   label: "Splits" },
+    { id: "efforts",  label: "Best Efforts" },
+  ];
+
   return (
     <div style={{
       position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 1000,
       display: "flex", alignItems: "center", justifyContent: "center",
-      backdropFilter: "blur(8px)",
-      overflowY: "auto", padding: "20px 0",
+      backdropFilter: "blur(8px)", overflowY: "auto", padding: "20px 0",
     }} onClick={onClose}>
       <div style={{
         background: "#161b22", border: "1px solid rgba(255,255,255,0.12)",
-        borderRadius: 24, padding: 32, maxWidth: 620, width: "90%", position: "relative",
+        borderRadius: 24, padding: 32, maxWidth: 660, width: "90%", position: "relative",
       }} onClick={e => e.stopPropagation()}>
 
-        {/* Header */}
+        {/* Close */}
         <button onClick={onClose} style={{
           position: "absolute", top: 16, right: 16, background: "rgba(255,255,255,0.08)",
           border: "none", color: "#fff", borderRadius: 8, width: 32, height: 32,
           cursor: "pointer", fontSize: 16, zIndex: 10,
         }}>×</button>
 
+        {/* Header */}
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 20 }}>
           <div style={{ fontSize: 28 }}>{sportIcon(act.sport_type)}</div>
           <div style={{ flex: 1 }}>
             <h2 style={{ margin: "0 0 4px", fontSize: 20, fontWeight: 800 }}>{act.name}</h2>
             <p style={{ color: "rgba(255,255,255,0.4)", fontSize: 13, margin: 0 }}>
               {formatDate(act.start_date)} · {act.sport_type}
+              {act.commute && " · 🚦 Commute"}
+              {act.trainer && " · 🏠 Indoor"}
             </p>
           </div>
-          {/* GPX Download button */}
-          {act.map_summary_polyline && (
-            <button
-              onClick={handleGpxDownload}
-              disabled={gpxLoading}
-              title="Download GPX"
-              style={{
-                display: "flex", alignItems: "center", gap: 8,
-                padding: "8px 16px", borderRadius: 10,
+          <div style={{ display: "flex", gap: 8 }}>
+            {act.map_summary_polyline && (
+              <button onClick={handleGpxDownload} disabled={gpxLoading} style={{
+                padding: "8px 14px", borderRadius: 10,
                 background: gpxLoading ? "rgba(255,255,255,0.05)" : "rgba(0,212,170,0.15)",
-                border: "1px solid rgba(0,212,170,0.3)",
-                color: "#00D4AA", cursor: gpxLoading ? "default" : "pointer",
-                fontSize: 13, fontWeight: 600, whiteSpace: "nowrap",
-              }}
-            >
-              {gpxLoading ? "⟳ Downloading..." : "⬇ GPX"}
-            </button>
-          )}
+                border: "1px solid rgba(0,212,170,0.3)", color: "#00D4AA",
+                cursor: gpxLoading ? "default" : "pointer", fontSize: 13, fontWeight: 600,
+              }}>{gpxLoading ? "⟳" : "⬇ GPX"}</button>
+            )}
+            <button onClick={() => { onClose(); onOpenDetail(act); }} style={{
+              padding: "8px 14px", borderRadius: 10,
+              background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)",
+              color: "rgba(255,255,255,0.7)", cursor: "pointer", fontSize: 13, fontWeight: 600,
+            }}>Full Page ↗</button>
+          </div>
         </div>
 
-        {/* Map */}
-        {act.map_summary_polyline && (
-          <ActivityMap polyline={act.map_summary_polyline} activityId={act.id} />
+        {/* Tabs */}
+        <div style={{ display: "flex", gap: 4, marginBottom: 20, borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: 0 }}>
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => setTab(t.id)} style={{
+              padding: "8px 18px", borderRadius: "8px 8px 0 0", border: "none",
+              background: tab === t.id ? "rgba(0,212,170,0.12)" : "transparent",
+              borderBottom: tab === t.id ? "2px solid #00D4AA" : "2px solid transparent",
+              color: tab === t.id ? "#00D4AA" : "rgba(255,255,255,0.4)",
+              cursor: "pointer", fontSize: 13, fontWeight: tab === t.id ? 600 : 400,
+            }}>{t.label}</button>
+          ))}
+        </div>
+
+        {/* ── OVERVIEW TAB ── */}
+        {tab === "overview" && (
+          <>
+            {act.map_summary_polyline && (
+              <ActivityMap polyline={act.map_summary_polyline} activityId={act.id} />
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+              {[
+                ["Distance", `${km(act.distance)} km`],
+                ["Moving Time", hms(act.moving_time)],
+                ["Elevation", act.total_elevation_gain ? `${Math.round(act.total_elevation_gain)} m` : "–"],
+                running ? ["Avg Pace", pace(act.moving_time, act.distance)] : ["Avg Speed", `${((act.average_speed||0)*3.6).toFixed(1)} km/h`],
+                ["Avg HR", act.average_heartrate ? `${Math.round(act.average_heartrate)} bpm` : "–"],
+                ["Max HR", act.max_heartrate ? `${Math.round(act.max_heartrate)} bpm` : "–"],
+                ["Avg Power", act.average_watts ? `${Math.round(act.average_watts)} W` : "–"],
+                ["Energy", act.kilojoules ? `${Math.round(act.kilojoules)} kJ` : "–"],
+                ["Suffer Score", act.suffer_score ? Math.round(act.suffer_score) : "–"],
+                ["PRs 🏅", act.pr_count || 0],
+                ["Kudos 👍", act.kudos_count || 0],
+                ["Achievements 🏆", act.achievement_count || 0],
+              ].map(([label, val]) => (
+                <div key={label} style={{ background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "12px 14px" }}>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.1em" }}>{label}</div>
+                  <div style={{ fontSize: 16, fontWeight: 700, marginTop: 4 }}>{val}</div>
+                </div>
+              ))}
+            </div>
+          </>
         )}
 
-        {/* Stats grid */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+        {/* ── SPLITS TAB ── */}
+        {tab === "splits" && (
+          <div>
+            {detailLoading && <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>Loading splits...</div>}
+            {detail?.error && <div style={{ textAlign: "center", padding: 40, color: "#FF6B6B" }}>Could not load splits from Strava.</div>}
+            {detail && !detail.error && (
+              <>
+                {detail.description && (
+                  <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 12, padding: "14px 16px", marginBottom: 16, color: "rgba(255,255,255,0.7)", fontSize: 14, lineHeight: 1.6, fontStyle: "italic" }}>
+                    "{detail.description}"
+                  </div>
+                )}
+                {detail.splits_metric?.length > 0 ? (
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ color: "rgba(255,255,255,0.3)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                        <th style={{ textAlign: "left", padding: "8px 12px" }}>KM</th>
+                        <th style={{ textAlign: "right", padding: "8px 12px" }}>Pace</th>
+                        <th style={{ textAlign: "right", padding: "8px 12px" }}>Time</th>
+                        <th style={{ textAlign: "right", padding: "8px 12px" }}>Elev</th>
+                        <th style={{ textAlign: "right", padding: "8px 12px" }}>HR</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detail.splits_metric.map((s, i) => {
+                        const paceColor = splitPaceColor(s.moving_time, s.distance);
+                        const paceStr = s.moving_time && s.distance ? formatPaceSeconds(s.moving_time / (s.distance / 1000)) : "–";
+                        const isLast = i === detail.splits_metric.length - 1;
+                        const distLabel = isLast && s.distance < 950 ? `${(s.distance).toFixed(0)}m` : `${s.split}`;
+                        return (
+                          <tr key={i} style={{ borderTop: "1px solid rgba(255,255,255,0.05)", background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.02)" }}>
+                            <td style={{ padding: "10px 12px", fontWeight: 600 }}>{distLabel}</td>
+                            <td style={{ padding: "10px 12px", textAlign: "right", fontWeight: 700, color: paceColor, fontFamily: "'Barlow Condensed', sans-serif", fontSize: 16 }}>{paceStr}</td>
+                            <td style={{ padding: "10px 12px", textAlign: "right", color: "rgba(255,255,255,0.5)" }}>{hms(s.moving_time)}</td>
+                            <td style={{ padding: "10px 12px", textAlign: "right", color: s.elevation_difference > 0 ? "#FFB347" : s.elevation_difference < 0 ? "#7AE8D0" : "rgba(255,255,255,0.3)" }}>
+                              {s.elevation_difference != null ? `${s.elevation_difference > 0 ? "+" : ""}${Math.round(s.elevation_difference)}m` : "–"}
+                            </td>
+                            <td style={{ padding: "10px 12px", textAlign: "right", color: "rgba(255,255,255,0.5)" }}>
+                              {s.average_heartrate ? `${Math.round(s.average_heartrate)}` : "–"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>No splits data available for this activity.</div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── BEST EFFORTS TAB ── */}
+        {tab === "efforts" && (
+          <div>
+            {detailLoading && <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>Loading best efforts...</div>}
+            {detail?.error && <div style={{ textAlign: "center", padding: 40, color: "#FF6B6B" }}>Could not load best efforts from Strava.</div>}
+            {detail && !detail.error && (
+              <>
+                {detail.description && (
+                  <div style={{ background: "rgba(255,255,255,0.04)", borderRadius: 12, padding: "14px 16px", marginBottom: 16, color: "rgba(255,255,255,0.7)", fontSize: 14, lineHeight: 1.6, fontStyle: "italic" }}>
+                    "{detail.description}"
+                  </div>
+                )}
+                {detail.best_efforts?.length > 0 ? (
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ color: "rgba(255,255,255,0.3)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                        <th style={{ textAlign: "left", padding: "8px 12px" }}>Distance</th>
+                        <th style={{ textAlign: "right", padding: "8px 12px" }}>Time</th>
+                        <th style={{ textAlign: "right", padding: "8px 12px" }}>Pace</th>
+                        <th style={{ textAlign: "right", padding: "8px 12px" }}>Rank</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detail.best_efforts.map((b, i) => (
+                        <tr key={i} style={{ borderTop: "1px solid rgba(255,255,255,0.05)", background: i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.02)" }}>
+                          <td style={{ padding: "10px 12px", fontWeight: 600 }}>{b.name}</td>
+                          <td style={{ padding: "10px 12px", textAlign: "right", fontFamily: "'Barlow Condensed', sans-serif", fontSize: 16, fontWeight: 700 }}>{hms(b.elapsed_time)}</td>
+                          <td style={{ padding: "10px 12px", textAlign: "right", color: "rgba(255,255,255,0.5)" }}>
+                            {b.elapsed_time && b.distance ? formatPaceSeconds(b.elapsed_time / (b.distance / 1000)) : "–"}
+                          </td>
+                          <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                            {b.pr_rank === 1 ? <span style={{ color: "#FFD700", fontWeight: 700 }}>🥇 PR</span>
+                             : b.pr_rank === 2 ? <span style={{ color: "#C0C0C0" }}>🥈 2nd</span>
+                             : b.pr_rank === 3 ? <span style={{ color: "#CD7F32" }}>🥉 3rd</span>
+                             : b.pr_rank ? <span style={{ color: "rgba(255,255,255,0.4)" }}>#{b.pr_rank}</span>
+                             : <span style={{ color: "rgba(255,255,255,0.2)" }}>–</span>}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : (
+                  <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>No best efforts recorded for this activity.</div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Full Activity Detail Page ─────────────────────────────────────────────────
+function ActivityDetailPage({ act, athleteId, onBack }) {
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [tab, setTab] = useState("splits");
+
+  useEffect(() => {
+    if (!act) return;
+    setLoading(true);
+    fetch(`${API}/api/activity/${athleteId}/${act.id}/detail`)
+      .then(r => r.json())
+      .then(d => setDetail(d))
+      .catch(() => setDetail({ error: true }))
+      .finally(() => setLoading(false));
+  }, [act, athleteId]);
+
+  if (!act) return null;
+  const running = isRun(act.sport_type);
+
+  const avgPaceSec = act.moving_time && act.distance ? act.moving_time / (act.distance / 1000) : null;
+  const splitPaceColor = (movingTime, distanceM) => {
+    if (!avgPaceSec || !movingTime || !distanceM) return "rgba(255,255,255,0.7)";
+    const splitPace = movingTime / (distanceM / 1000);
+    const diff = splitPace - avgPaceSec;
+    if (diff < -15) return "#00D4AA";
+    if (diff < 0) return "#7AE8D0";
+    if (diff < 15) return "#FFB347";
+    return "#FF6B6B";
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#0d1117", color: "#fff", fontFamily: "'Inter', sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@700;900&family=Inter:wght@400;500;600&display=swap');`}</style>
+
+      {/* Top bar */}
+      <div style={{ background: "#0a0e14", borderBottom: "1px solid rgba(255,255,255,0.07)", padding: "16px 32px", display: "flex", alignItems: "center", gap: 16, position: "sticky", top: 0, zIndex: 10 }}>
+        <button onClick={onBack} style={{ background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.12)", color: "rgba(255,255,255,0.7)", padding: "8px 16px", borderRadius: 10, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+          ← Back
+        </button>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 800, fontSize: 18 }}>{sportIcon(act.sport_type)} {act.name}</div>
+          <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 13, marginTop: 2 }}>{formatDate(act.start_date)} · {act.sport_type}</div>
+        </div>
+      </div>
+
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "32px 32px" }}>
+        {/* Description */}
+        {detail?.description && (
+          <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 16, padding: "20px 24px", marginBottom: 28, color: "rgba(255,255,255,0.6)", fontSize: 15, lineHeight: 1.7, fontStyle: "italic" }}>
+            "{detail.description}"
+          </div>
+        )}
+
+        {/* Stats row */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 12, marginBottom: 28 }}>
           {[
             ["Distance", `${km(act.distance)} km`],
-            ["Moving Time", hms(act.moving_time)],
-            ["Elevation", act.total_elevation_gain ? `${Math.round(act.total_elevation_gain)} m` : "–"],
-            running ? ["Avg Pace", pace(act.moving_time, act.distance)] : ["Avg Speed", `${((act.average_speed||0)*3.6).toFixed(1)} km/h`],
+            ["Time", hms(act.moving_time)],
+            ["Elevation", `${Math.round(act.total_elevation_gain || 0)}m`],
+            running ? ["Avg Pace", pace(act.moving_time, act.distance)] : ["Speed", `${((act.average_speed||0)*3.6).toFixed(1)}`],
             ["Avg HR", act.average_heartrate ? `${Math.round(act.average_heartrate)} bpm` : "–"],
-            ["Max HR", act.max_heartrate ? `${Math.round(act.max_heartrate)} bpm` : "–"],
-            ["Avg Power", act.average_watts ? `${Math.round(act.average_watts)} W` : "–"],
-            ["Energy", act.kilojoules ? `${Math.round(act.kilojoules)} kJ` : "–"],
-            ["Suffer Score", act.suffer_score ? Math.round(act.suffer_score) : "–"],
-            ["PRs 🏅", act.pr_count || 0],
-            ["Kudos 👍", act.kudos_count || 0],
-            ["Achievements 🏆", act.achievement_count || 0],
+            ["Kudos", act.kudos_count || 0],
           ].map(([label, val]) => (
-            <div key={label} style={{ background: "rgba(255,255,255,0.04)", borderRadius: 10, padding: "12px 14px" }}>
-              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.1em" }}>{label}</div>
-              <div style={{ fontSize: 16, fontWeight: 700, marginTop: 4 }}>{val}</div>
+            <div key={label} style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, padding: "16px" }}>
+              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 6 }}>{label}</div>
+              <div style={{ fontSize: 22, fontWeight: 800, fontFamily: "'Barlow Condensed', sans-serif" }}>{val}</div>
             </div>
           ))}
         </div>
 
-        {act.commute && <div style={{ marginTop: 14, color: "#00D4AA", fontSize: 13 }}>🚦 Commute</div>}
-        {act.trainer && <div style={{ marginTop: 8, color: "#FF6B2B", fontSize: 13 }}>🏠 Indoor Trainer</div>}
+        {/* Two column: map + tabs */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 24 }}>
+
+          {/* Map */}
+          <div>
+            {act.map_summary_polyline
+              ? <ActivityMap polyline={act.map_summary_polyline} activityId={act.id} height={400} />
+              : <div style={{ height: 400, background: "rgba(255,255,255,0.03)", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.2)" }}>No GPS data</div>
+            }
+          </div>
+
+          {/* Splits / Best Efforts */}
+          <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 16, padding: 20, overflow: "hidden" }}>
+            {/* Tab bar */}
+            <div style={{ display: "flex", gap: 4, marginBottom: 16, borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: 0 }}>
+              {[{ id: "splits", label: "Km Splits" }, { id: "efforts", label: "Best Efforts" }].map(t => (
+                <button key={t.id} onClick={() => setTab(t.id)} style={{
+                  padding: "7px 16px", borderRadius: "6px 6px 0 0", border: "none",
+                  background: tab === t.id ? "rgba(0,212,170,0.12)" : "transparent",
+                  borderBottom: tab === t.id ? "2px solid #00D4AA" : "2px solid transparent",
+                  color: tab === t.id ? "#00D4AA" : "rgba(255,255,255,0.4)",
+                  cursor: "pointer", fontSize: 13, fontWeight: tab === t.id ? 600 : 400,
+                }}>{t.label}</button>
+              ))}
+            </div>
+
+            {loading && <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>Loading...</div>}
+
+            {!loading && detail?.error && <div style={{ textAlign: "center", padding: 40, color: "#FF6B6B" }}>Could not load from Strava.</div>}
+
+            {!loading && detail && !detail.error && tab === "splits" && (
+              <div style={{ overflowY: "auto", maxHeight: 340 }}>
+                {detail.splits_metric?.length > 0 ? (
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead style={{ position: "sticky", top: 0, background: "#161b22" }}>
+                      <tr style={{ color: "rgba(255,255,255,0.3)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                        <th style={{ textAlign: "left", padding: "8px 10px" }}>KM</th>
+                        <th style={{ textAlign: "right", padding: "8px 10px" }}>Pace</th>
+                        <th style={{ textAlign: "right", padding: "8px 10px" }}>Elev</th>
+                        <th style={{ textAlign: "right", padding: "8px 10px" }}>HR</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detail.splits_metric.map((s, i) => {
+                        const paceColor = splitPaceColor(s.moving_time, s.distance);
+                        const paceStr = s.moving_time && s.distance ? formatPaceSeconds(s.moving_time / (s.distance / 1000)) : "–";
+                        const isLast = i === detail.splits_metric.length - 1;
+                        const distLabel = isLast && s.distance < 950 ? `${(s.distance).toFixed(0)}m` : `${s.split}`;
+                        return (
+                          <tr key={i} style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+                            <td style={{ padding: "9px 10px", fontWeight: 600 }}>{distLabel}</td>
+                            <td style={{ padding: "9px 10px", textAlign: "right", fontWeight: 700, color: paceColor, fontFamily: "'Barlow Condensed', sans-serif", fontSize: 16 }}>{paceStr}</td>
+                            <td style={{ padding: "9px 10px", textAlign: "right", color: s.elevation_difference > 0 ? "#FFB347" : "#7AE8D0" }}>
+                              {s.elevation_difference != null ? `${s.elevation_difference > 0 ? "+" : ""}${Math.round(s.elevation_difference)}m` : "–"}
+                            </td>
+                            <td style={{ padding: "9px 10px", textAlign: "right", color: "rgba(255,255,255,0.5)" }}>
+                              {s.average_heartrate ? `${Math.round(s.average_heartrate)}` : "–"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                ) : <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>No splits available.</div>}
+              </div>
+            )}
+
+            {!loading && detail && !detail.error && tab === "efforts" && (
+              <div style={{ overflowY: "auto", maxHeight: 340 }}>
+                {detail.best_efforts?.length > 0 ? (
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                    <thead style={{ position: "sticky", top: 0, background: "#161b22" }}>
+                      <tr style={{ color: "rgba(255,255,255,0.3)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                        <th style={{ textAlign: "left", padding: "8px 10px" }}>Distance</th>
+                        <th style={{ textAlign: "right", padding: "8px 10px" }}>Time</th>
+                        <th style={{ textAlign: "right", padding: "8px 10px" }}>Rank</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {detail.best_efforts.map((b, i) => (
+                        <tr key={i} style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+                          <td style={{ padding: "9px 10px", fontWeight: 600 }}>{b.name}</td>
+                          <td style={{ padding: "9px 10px", textAlign: "right", fontFamily: "'Barlow Condensed', sans-serif", fontSize: 16, fontWeight: 700 }}>{hms(b.elapsed_time)}</td>
+                          <td style={{ padding: "9px 10px", textAlign: "right" }}>
+                            {b.pr_rank === 1 ? <span style={{ color: "#FFD700" }}>🥇 PR</span>
+                             : b.pr_rank === 2 ? <span style={{ color: "#C0C0C0" }}>🥈</span>
+                             : b.pr_rank === 3 ? <span style={{ color: "#CD7F32" }}>🥉</span>
+                             : b.pr_rank ? <span style={{ color: "rgba(255,255,255,0.4)" }}>#{b.pr_rank}</span>
+                             : "–"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                ) : <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>No best efforts recorded.</div>}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -1260,6 +1583,7 @@ export default function App() {
   const [selectedYear, setSelectedYear] = useState(null);
   const [selectedSport, setSelectedSport] = useState(null);
   const [selectedActivity, setSelectedActivity] = useState(null);
+  const [detailActivity, setDetailActivity] = useState(null);
   const [loading, setLoading] = useState(false);
   const [actPage, setActPage] = useState(0);
   const [totalActs, setTotalActs] = useState(0);
@@ -1637,7 +1961,8 @@ export default function App() {
         </div>
       </div>
 
-      <ActivityModal act={selectedActivity} athleteId={athleteId} onClose={() => setSelectedActivity(null)} />
+      <ActivityModal act={selectedActivity} athleteId={athleteId} onClose={() => setSelectedActivity(null)} onOpenDetail={(act) => { setSelectedActivity(null); setDetailActivity(act); }} />
+      {detailActivity && <ActivityDetailPage act={detailActivity} athleteId={athleteId} onBack={() => setDetailActivity(null)} />}
     </div>
   );
 }
