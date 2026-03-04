@@ -18,6 +18,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Activity detail: description** — your Strava activity notes displayed in the modal and detail page
 - **Full activity detail page** — dedicated two-column layout with map + splits/efforts side by side, accessed via "Full Page ↗" in the modal
 - **Tabbed activity modal** — Overview / Splits / Best Efforts tabs; detail data fetched on demand and cached locally
+- **Half split indicator** — first vs second half pace comparison on the splits view, with positive/negative/even split label and colour coding
 - New backend endpoint `GET /api/activity/{athlete_id}/{activity_id}/detail` — fetches from Strava and caches in DB
 
 ### Changed
