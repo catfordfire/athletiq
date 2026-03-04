@@ -36,6 +36,44 @@ const formatDate = (iso) => {
   if (!iso) return "";
   return new Date(iso).toLocaleDateString("en-IE", { day: "numeric", month: "short", year: "numeric" });
 };
+
+// Calculate half split from km splits array
+const calcHalfSplit = (splits) => {
+  if (!splits || splits.length < 2) return null;
+  const totalDist = splits.reduce((sum, s) => sum + (s.distance || 0), 0);
+  if (totalDist < 1000) return null;
+  const halfDist = totalDist / 2;
+  let accumulated = 0;
+  let firstTime = 0;
+  let firstDist = 0;
+  let secondTime = 0;
+  let secondDist = 0;
+  for (const s of splits) {
+    const remaining = halfDist - accumulated;
+    if (accumulated < halfDist) {
+      if (accumulated + s.distance <= halfDist) {
+        firstTime += s.moving_time;
+        firstDist += s.distance;
+      } else {
+        // Partially in first half
+        const fraction = remaining / s.distance;
+        firstTime += Math.round(s.moving_time * fraction);
+        firstDist += remaining;
+        secondTime += Math.round(s.moving_time * (1 - fraction));
+        secondDist += s.distance - remaining;
+      }
+    } else {
+      secondTime += s.moving_time;
+      secondDist += s.distance;
+    }
+    accumulated += s.distance;
+  }
+  if (!firstTime || !secondTime || !firstDist || !secondDist) return null;
+  const firstPace = firstTime / (firstDist / 1000);
+  const secondPace = secondTime / (secondDist / 1000);
+  const diffSec = Math.round(secondPace - firstPace);
+  return { firstPace, secondPace, diffSec, firstTime, secondTime };
+};
 const isRun = (type = "") => type.toLowerCase().includes("run");
 const sportIcon = (type = "") => {
   const t = type.toLowerCase();
@@ -399,6 +437,33 @@ function ActivityModal({ act, athleteId, onClose, onOpenDetail }) {
                   </div>
                 )}
                 {detail.splits_metric?.length > 0 ? (
+                  <>
+                    {(() => {
+                      const hs = calcHalfSplit(detail.splits_metric);
+                      if (!hs) return null;
+                      const isNeg = hs.diffSec < 0;
+                      const isEven = Math.abs(hs.diffSec) <= 3;
+                      const label = isEven ? "Even split 👌" : isNeg ? "Negative split 🔥" : "Positive split 😬";
+                      const color = isEven ? "#00D4AA" : isNeg ? "#00D4AA" : "#FFB347";
+                      const diffStr = isEven ? "±0s" : `${isNeg ? "" : "+"}${hs.diffSec}s /km`;
+                      return (
+                        <div style={{ display: "flex", gap: 10, marginBottom: 14, background: "rgba(255,255,255,0.03)", borderRadius: 12, padding: "12px 16px", alignItems: "center", border: `1px solid ${color}33` }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>First Half</div>
+                            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 20, fontWeight: 700 }}>{formatPaceSeconds(hs.firstPace)}<span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", fontFamily: "Inter" }}> /km</span></div>
+                          </div>
+                          <div style={{ textAlign: "center", padding: "0 12px" }}>
+                            <div style={{ fontSize: 18, marginBottom: 2 }}>{isEven ? "=" : isNeg ? "↗" : "↘"}</div>
+                            <div style={{ fontSize: 11, color, fontWeight: 700 }}>{diffStr}</div>
+                          </div>
+                          <div style={{ flex: 1, textAlign: "right" }}>
+                            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Second Half</div>
+                            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 20, fontWeight: 700 }}>{formatPaceSeconds(hs.secondPace)}<span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", fontFamily: "Inter" }}> /km</span></div>
+                          </div>
+                          <div style={{ marginLeft: 12, padding: "6px 12px", borderRadius: 8, background: `${color}22`, color, fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</div>
+                        </div>
+                      );
+                    })()}
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                     <thead>
                       <tr style={{ color: "rgba(255,255,255,0.3)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em" }}>
@@ -431,6 +496,7 @@ function ActivityModal({ act, athleteId, onClose, onOpenDetail }) {
                       })}
                     </tbody>
                   </table>
+                  </>
                 ) : (
                   <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>No splits data available for this activity.</div>
                 )}
@@ -595,6 +661,33 @@ function ActivityDetailPage({ act, athleteId, onBack }) {
             {!loading && detail && !detail.error && tab === "splits" && (
               <div style={{ overflowY: "auto", maxHeight: 340 }}>
                 {detail.splits_metric?.length > 0 ? (
+                  <>
+                    {(() => {
+                      const hs = calcHalfSplit(detail.splits_metric);
+                      if (!hs) return null;
+                      const isNeg = hs.diffSec < 0;
+                      const isEven = Math.abs(hs.diffSec) <= 3;
+                      const label = isEven ? "Even split 👌" : isNeg ? "Negative split 🔥" : "Positive split 😬";
+                      const color = isEven ? "#00D4AA" : isNeg ? "#00D4AA" : "#FFB347";
+                      const diffStr = isEven ? "±0s" : `${isNeg ? "" : "+"}${hs.diffSec}s /km`;
+                      return (
+                        <div style={{ display: "flex", gap: 10, marginBottom: 14, background: "rgba(255,255,255,0.03)", borderRadius: 12, padding: "12px 16px", alignItems: "center", border: `1px solid ${color}33` }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>First Half</div>
+                            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 20, fontWeight: 700 }}>{formatPaceSeconds(hs.firstPace)}<span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", fontFamily: "Inter" }}> /km</span></div>
+                          </div>
+                          <div style={{ textAlign: "center", padding: "0 12px" }}>
+                            <div style={{ fontSize: 18, marginBottom: 2 }}>{isEven ? "=" : isNeg ? "↗" : "↘"}</div>
+                            <div style={{ fontSize: 11, color, fontWeight: 700 }}>{diffStr}</div>
+                          </div>
+                          <div style={{ flex: 1, textAlign: "right" }}>
+                            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.3)", textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Second Half</div>
+                            <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 20, fontWeight: 700 }}>{formatPaceSeconds(hs.secondPace)}<span style={{ fontSize: 12, color: "rgba(255,255,255,0.4)", fontFamily: "Inter" }}> /km</span></div>
+                          </div>
+                          <div style={{ marginLeft: 12, padding: "6px 12px", borderRadius: 8, background: `${color}22`, color, fontSize: 12, fontWeight: 700, whiteSpace: "nowrap" }}>{label}</div>
+                        </div>
+                      );
+                    })()}
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                     <thead style={{ position: "sticky", top: 0, background: "#161b22" }}>
                       <tr style={{ color: "rgba(255,255,255,0.3)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em" }}>
@@ -625,7 +718,7 @@ function ActivityDetailPage({ act, athleteId, onBack }) {
                       })}
                     </tbody>
                   </table>
-                ) : <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>No splits available.</div>}
+                  </> ) : <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>No splits available.</div>}
               </div>
             )}
 
