@@ -390,7 +390,8 @@ function ActivityMapWithSegment({ polyline, activityId, height = 240, segment })
 }
 
 // ── Backfill control component ───────────────────────────────────────────────
-function BackfillControl({ segmentId, backfill, onStart }) {
+function BackfillControl({ segmentId, backfill, onStart, stravaSummit = false }) {
+  if (stravaSummit) return null; // Summit users get history directly from Strava
   const isRunning = backfill && (backfill.status === "start" || backfill.status === "progress");
   const isDone = backfill?.status === "done";
   const isRateLimit = backfill?.status === "rate_limit";
@@ -465,25 +466,28 @@ function formatDelta(diffSec) {
     : `${sign}${s}s`;
 }
 
-function SegmentsPanel({ segments, loading, error, routePolyline, activityId, athleteId, selectedSegment, onSelectSegment, mapHeight = 200, compact = false }) {
+function SegmentsPanel({ segments, loading, error, routePolyline, activityId, athleteId, stravaSummit = false, selectedSegment, onSelectSegment, mapHeight = 200, compact = false }) {
   const [segHistory, setSegHistory] = useState({});
   const [historyLoading, setHistoryLoading] = useState({});
-  const [backfill, setBackfill] = useState(null); // null | { status, checked, total, found }
+  const [backfill, setBackfill] = useState(null);
   const backfillRef = useRef(null);
   const pad = compact ? "9px 10px" : "10px 12px";
 
-  // Fetch history when a segment with a segment_id is selected
+  // Fetch history when a segment is selected — Summit uses Strava direct, free uses local cache
   useEffect(() => {
     if (!selectedSegment?.segment_id) return;
     const sid = selectedSegment.segment_id;
     if (segHistory[sid] !== undefined || historyLoading[sid]) return;
     setHistoryLoading(h => ({ ...h, [sid]: true }));
-    fetch(`${API}/api/segments/${athleteId}/${sid}/history`)
+    const endpoint = stravaSummit
+      ? `${API}/api/segments/${athleteId}/${sid}/strava_history`
+      : `${API}/api/segments/${athleteId}/${sid}/history`;
+    fetch(endpoint)
       .then(r => r.json())
       .then(d => setSegHistory(h => ({ ...h, [sid]: d.efforts || [] })))
       .catch(() => setSegHistory(h => ({ ...h, [sid]: [] })))
       .finally(() => setHistoryLoading(h => ({ ...h, [sid]: false })));
-  }, [selectedSegment, athleteId]);
+  }, [selectedSegment, athleteId, stravaSummit]);
 
   const startBackfill = (segmentId) => {
     if (backfillRef.current) backfillRef.current.close();
@@ -578,12 +582,21 @@ function SegmentsPanel({ segments, loading, error, routePolyline, activityId, at
                     );
                   })}
                 </div>
-                <BackfillControl segmentId={selectedSegment.segment_id} backfill={backfill} onStart={startBackfill} />
+                <BackfillControl segmentId={selectedSegment.segment_id} backfill={backfill} onStart={startBackfill} stravaSummit={stravaSummit} />
               </div>
               ) : (
                 <div>
                   <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 13, marginBottom: 10 }}>No history yet in cache.</div>
-                  <BackfillControl segmentId={selectedSegment.segment_id} backfill={backfill} onStart={startBackfill} />
+                  <BackfillControl segmentId={selectedSegment.segment_id} backfill={backfill} onStart={startBackfill} stravaSummit={stravaSummit} />
+                  {!stravaSummit && (
+                    <div style={{ fontSize: 11, color: "rgba(255,255,255,0.15)", marginTop: 8 }}>
+                      Strava Summit subscriber? Your subscription is detected at login —
+                      <span
+                        style={{ color: "rgba(0,212,170,0.5)", cursor: "pointer", marginLeft: 4, textDecoration: "underline" }}
+                        onClick={() => window.location.href = `${API}/auth/login`}
+                      >re-connect with Strava</span> to enable full history.
+                    </div>
+                  )}
                 </div>
               );
             })()
@@ -662,7 +675,7 @@ function SegmentsPanel({ segments, loading, error, routePolyline, activityId, at
   );
 }
 
-function ActivityModal({ act, athleteId, onClose, onOpenDetail }) {
+function ActivityModal({ act, athleteId, stravaSummit, onClose, onOpenDetail }) {
   const [gpxLoading, setGpxLoading] = useState(false);
   const [tab, setTab] = useState("overview");
   const [detail, setDetail] = useState(null);
@@ -957,6 +970,7 @@ function ActivityModal({ act, athleteId, onClose, onOpenDetail }) {
             routePolyline={act.map_summary_polyline}
             activityId={act.id}
             athleteId={athleteId}
+            stravaSummit={stravaSummit}
             selectedSegment={selectedSegment}
             onSelectSegment={setSelectedSegment}
             mapHeight={200}
@@ -968,7 +982,7 @@ function ActivityModal({ act, athleteId, onClose, onOpenDetail }) {
 }
 
 // ── Full Activity Detail Page ─────────────────────────────────────────────────
-function ActivityDetailPage({ act, athleteId, onBack }) {
+function ActivityDetailPage({ act, athleteId, stravaSummit, onBack }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("splits");
@@ -1179,6 +1193,7 @@ function ActivityDetailPage({ act, athleteId, onBack }) {
                 routePolyline={act.map_summary_polyline}
                 activityId={act.id}
                 athleteId={athleteId}
+                stravaSummit={stravaSummit}
                 selectedSegment={selectedSegment}
                 onSelectSegment={setSelectedSegment}
                 mapHeight={null}
@@ -2102,8 +2117,8 @@ export default function App() {
   const [athleteId, setAthleteId] = useState(() => localStorage.getItem("athlete_id") || null);
   const [athlete, setAthlete] = useState(null);
   const [stats, setStats] = useState(null);
-  const [allActivities, setAllActivities] = useState([]);  // all fetched for client-side ops
-  const [activities, setActivities] = useState([]);        // paginated list view
+  const [allActivities, setAllActivities] = useState([]);
+  const [activities, setActivities] = useState([]);
   const [fitness, setFitness] = useState([]);
   const [syncStatus, setSyncStatus] = useState(null);
   const [selectedYear, setSelectedYear] = useState(null);
@@ -2113,6 +2128,16 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [actPage, setActPage] = useState(0);
   const [totalActs, setTotalActs] = useState(0);
+  const [stravaSummit, setStravaSummit] = useState(false);
+
+  // Fetch runtime config — Summit auto-detected from athlete profile
+  useEffect(() => {
+    if (!athleteId) return;
+    fetch(`${API}/api/config?athlete_id=${athleteId}`)
+      .then(r => r.json())
+      .then(d => setStravaSummit(d.strava_summit || false))
+      .catch(() => {});
+  }, [athleteId]);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -2487,8 +2512,8 @@ export default function App() {
         </div>
       </div>
 
-      <ActivityModal act={selectedActivity} athleteId={athleteId} onClose={() => setSelectedActivity(null)} onOpenDetail={(act) => { setSelectedActivity(null); setDetailActivity(act); }} />
-      {detailActivity && <ActivityDetailPage act={detailActivity} athleteId={athleteId} onBack={() => setDetailActivity(null)} />}
+      <ActivityModal act={selectedActivity} athleteId={athleteId} stravaSummit={stravaSummit} onClose={() => setSelectedActivity(null)} onOpenDetail={(act) => { setSelectedActivity(null); setDetailActivity(act); }} />
+      {detailActivity && <ActivityDetailPage act={detailActivity} athleteId={athleteId} stravaSummit={stravaSummit} onBack={() => setDetailActivity(null)} />}
     </div>
   );
 }

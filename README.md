@@ -185,6 +185,10 @@ The Δ vs PR column in the Segments tab is powered by scanning your **locally ca
 - Use the **🔍 Find previous efforts** button on any segment to scan all remaining un-fetched activities in the background
 - A segment marked `🥇 PR` by Strava but showing `–` delta simply means the previous effort hasn't been cached yet — it is a genuine PR
 
+### Strava Summit auto-detection
+
+Athletiq automatically detects whether you have a Strava Summit subscription from your athlete profile, enabling full segment history without any configuration. This is checked at login time. If your subscription status changes (upgrade or downgrade), click **Connect with Strava** again on the main screen to refresh it — no data is lost when you do this.
+
 ### Rate limits
 
 Strava imposes a limit of **200 requests per 15 minutes** and **2,000 per day** on the free tier. Athletiq manages this carefully:

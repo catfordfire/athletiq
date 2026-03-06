@@ -23,6 +23,7 @@ CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "")
 APP_URL = os.getenv("APP_URL", "http://localhost:3000")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./strava.db")
+STRAVA_SUMMIT = os.getenv("STRAVA_SUMMIT", "false").lower() == "true"
 
 STRAVA_AUTH_URL = "https://www.strava.com/oauth/authorize"
 STRAVA_TOKEN_URL = "https://www.strava.com/oauth/token"
@@ -110,6 +111,27 @@ def get_db():
         yield db
     finally:
         db.close()
+
+
+# ── Config ────────────────────────────────────────────────────────────────────
+@app.get("/api/config")
+def get_config(athlete_id: Optional[int] = None):
+    """Return runtime configuration flags to the frontend.
+    Summit status is auto-detected from the athlete profile stored at OAuth time.
+    STRAVA_SUMMIT=true in .env can be used as a manual override."""
+    summit = STRAVA_SUMMIT  # start with env flag
+    if not summit and athlete_id:
+        db = SessionLocal()
+        try:
+            token = db.query(TokenStore).filter_by(athlete_id=athlete_id).first()
+            if token and token.athlete_data:
+                athlete = json.loads(token.athlete_data)
+                summit = bool(athlete.get("summit", False))
+        except Exception:
+            pass
+        finally:
+            db.close()
+    return {"strava_summit": summit}
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -786,8 +808,10 @@ SEGMENT_HISTORY_TTL_DAYS = 7
 
 @app.get("/api/segments/{athlete_id}/{segment_id}/strava_history")
 async def get_segment_strava_history(athlete_id: int, segment_id: int):
-    """Fetch all athlete efforts on a segment directly from Strava.
+    """Fetch all athlete efforts on a segment directly from Strava (Summit only).
     Results are cached in DB and refreshed after 7 days."""
+    if not STRAVA_SUMMIT:
+        raise HTTPException(403, "Strava Summit subscription required. Set STRAVA_SUMMIT=true in .env to enable.")
     db = SessionLocal()
     try:
         # Check cache
