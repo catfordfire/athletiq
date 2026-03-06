@@ -37,6 +37,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.1] - 2026-03-06
+
+### Added
+- **Strava Summit auto-detection** — Summit subscription status is now read automatically from the stored athlete profile at login. No `.env` flag required. Summit users get full segment history directly from Strava; free users get cache-based history with the backfill scan
+- New `GET /api/config` endpoint — returns runtime flags (including `strava_summit`) to the frontend at load time
+- Re-auth prompt in the segment history panel for free users, with a direct link to re-connect with Strava if their subscription status has changed
+
+### Changed
+- `STRAVA_SUMMIT` in `.env` is now an optional manual override only — auto-detection handles it in all normal cases
+- Summit detection refreshes on every login — upgrading or downgrading Strava just requires clicking "Connect with Strava" again
+
+---
+
 ## [1.1.0] - 2026-02-27
 
 ### Added
