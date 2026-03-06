@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from sqlalchemy import create_engine, Column, Integer, BigInteger, Float, String, DateTime, Boolean, Text, JSON
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -78,6 +78,16 @@ class Activity(Base):
     splits_metric = Column(Text, nullable=True)   # JSON array of km splits
     best_efforts = Column(Text, nullable=True)    # JSON array of best efforts
     detail_fetched = Column(Boolean, default=False)
+    segment_efforts = Column(Text, nullable=True)  # JSON array of segment efforts
+
+
+class SegmentHistory(Base):
+    __tablename__ = "segment_history"
+    id = Column(Integer, primary_key=True, index=True)
+    athlete_id = Column(Integer, index=True)
+    segment_id = Column(Integer, index=True)
+    efforts = Column(Text, nullable=True)   # JSON array sorted fastest first
+    fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
 Base.metadata.create_all(bind=engine)
@@ -656,12 +666,13 @@ async def get_activity_detail(athlete_id: int, activity_id: int):
         if not act:
             raise HTTPException(404, "Activity not found")
 
-        # Return cached detail if already fetched
-        if act.detail_fetched:
+        # Return cached detail if already fetched AND segments are present
+        if act.detail_fetched and act.segment_efforts is not None:
             return {
                 "description": act.description,
                 "splits_metric": json.loads(act.splits_metric) if act.splits_metric else [],
                 "best_efforts": json.loads(act.best_efforts) if act.best_efforts else [],
+                "segment_efforts": json.loads(act.segment_efforts) if act.segment_efforts else [],
             }
 
         # Fetch detailed activity from Strava
@@ -702,10 +713,29 @@ async def get_activity_detail(athlete_id: int, activity_id: int):
                 "pr_rank": b.get("pr_rank"),
             })
 
+        # Extract and clean segment efforts
+        segment_efforts = []
+        for se in data.get("segment_efforts", []):
+            seg = se.get("segment", {})
+            segment_efforts.append({
+                "segment_id": seg.get("id"),
+                "name": seg.get("name"),
+                "distance": seg.get("distance"),
+                "average_grade": seg.get("average_grade"),
+                "elapsed_time": se.get("elapsed_time"),
+                "moving_time": se.get("moving_time"),
+                "pr_rank": se.get("pr_rank"),
+                "achievements": [a.get("type_id") for a in se.get("achievements", [])],
+                "start_latlng": seg.get("start_latlng"),
+                "end_latlng": seg.get("end_latlng"),
+                "polyline": seg.get("map", {}).get("polyline") or seg.get("map", {}).get("summary_polyline"),
+            })
+
         # Cache in DB
         act.description = data.get("description") or ""
         act.splits_metric = json.dumps(splits)
         act.best_efforts = json.dumps(best_efforts)
+        act.segment_efforts = json.dumps(segment_efforts)
         act.detail_fetched = True
         db.commit()
 
@@ -713,6 +743,231 @@ async def get_activity_detail(athlete_id: int, activity_id: int):
             "description": act.description,
             "splits_metric": splits,
             "best_efforts": best_efforts,
+            "segment_efforts": segment_efforts,
         }
     finally:
         db.close()
+
+
+@app.get("/api/segments/{athlete_id}/{segment_id}/history")
+def get_segment_history(athlete_id: int, segment_id: int):
+    """Scan all cached activity segment_efforts for this athlete and return
+    all efforts on the given segment, sorted fastest first."""
+    db = SessionLocal()
+    try:
+        acts = db.query(Activity).filter(
+            Activity.athlete_id == athlete_id,
+            Activity.segment_efforts.isnot(None),
+        ).all()
+
+        efforts = []
+        for act in acts:
+            try:
+                segs = json.loads(act.segment_efforts)
+            except Exception:
+                continue
+            for se in segs:
+                if se.get("segment_id") == segment_id:
+                    efforts.append({
+                        "activity_id": act.id,
+                        "activity_name": act.name,
+                        "date": act.start_date.isoformat() if act.start_date else None,
+                        "elapsed_time": se.get("elapsed_time"),
+                        "pr_rank": se.get("pr_rank"),
+                    })
+
+        # Sort fastest first
+        efforts.sort(key=lambda e: e["elapsed_time"] or 99999)
+        return {"segment_id": segment_id, "efforts": efforts}
+    finally:
+        db.close()
+
+SEGMENT_HISTORY_TTL_DAYS = 7
+
+@app.get("/api/segments/{athlete_id}/{segment_id}/strava_history")
+async def get_segment_strava_history(athlete_id: int, segment_id: int):
+    """Fetch all athlete efforts on a segment directly from Strava.
+    Results are cached in DB and refreshed after 7 days."""
+    db = SessionLocal()
+    try:
+        # Check cache
+        cached = db.query(SegmentHistory).filter_by(
+            athlete_id=athlete_id, segment_id=segment_id
+        ).first()
+
+        if cached:
+            age = datetime.utcnow() - cached.fetched_at
+            if age.days < SEGMENT_HISTORY_TTL_DAYS:
+                return {
+                    "segment_id": segment_id,
+                    "efforts": json.loads(cached.efforts) if cached.efforts else [],
+                    "from_cache": True,
+                }
+
+        # Fetch from Strava
+        access_token = await get_valid_token(athlete_id, db)
+        efforts = []
+        page = 1
+        async with httpx.AsyncClient(timeout=30) as client:
+            while True:
+                resp = await client.get(
+                    f"{STRAVA_API_BASE}/segment_efforts",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params={"segment_id": segment_id, "per_page": 200, "page": page},
+                )
+                if resp.status_code == 429:
+                    raise HTTPException(429, "Strava rate limit — try again in a minute")
+                if resp.status_code != 200:
+                    raise HTTPException(502, f"Strava error: {resp.status_code}")
+                page_data = resp.json()
+                if not page_data:
+                    break
+                for e in page_data:
+                    efforts.append({
+                        "activity_id": e.get("activity", {}).get("id"),
+                        "activity_name": None,  # not returned by this endpoint
+                        "date": e.get("start_date_local"),
+                        "elapsed_time": e.get("elapsed_time"),
+                        "moving_time": e.get("moving_time"),
+                        "pr_rank": e.get("pr_rank"),
+                    })
+                if len(page_data) < 200:
+                    break
+                page += 1
+
+        # Sort fastest first
+        efforts.sort(key=lambda e: e["elapsed_time"] or 99999)
+
+        # Upsert cache
+        if cached:
+            cached.efforts = json.dumps(efforts)
+            cached.fetched_at = datetime.utcnow()
+        else:
+            db.add(SegmentHistory(
+                athlete_id=athlete_id,
+                segment_id=segment_id,
+                efforts=json.dumps(efforts),
+                fetched_at=datetime.utcnow(),
+            ))
+        db.commit()
+
+        return {"segment_id": segment_id, "efforts": efforts, "from_cache": False}
+    finally:
+        db.close()
+
+
+@app.get("/api/segments/{athlete_id}/{segment_id}/backfill")
+async def backfill_segment_history(athlete_id: int, segment_id: int):
+    """Stream SSE progress while silently fetching detail for all un-fetched
+    activities, looking for efforts on the given segment.
+    
+    Uses sequential requests with dynamic delay based on Strava rate limit headers.
+    Strava allows 200 requests/15min (~13/min). We target ~10/min as safe headroom."""
+
+    async def event_stream():
+        db = SessionLocal()
+        try:
+            pending = db.query(Activity).filter(
+                Activity.athlete_id == athlete_id,
+                Activity.detail_fetched == False,
+            ).order_by(Activity.start_date.asc()).all()
+
+            total = len(pending)
+            found = 0
+            checked = 0
+
+            if total == 0:
+                yield f"data: {json.dumps({'status': 'done', 'checked': 0, 'total': 0, 'found': 0})}\n\n"
+                return
+
+            yield f"data: {json.dumps({'status': 'start', 'total': total})}\n\n"
+
+            # Sequential requests — 6s base delay = 10/min, well within 200/15min limit.
+            # We also read X-RateLimit-Usage headers and back off further if >150/15min used.
+            BASE_DELAY = 6.0
+
+            access_token = await get_valid_token(athlete_id, db)
+
+            for act in pending:
+                try:
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        resp = await client.get(
+                            f"{STRAVA_API_BASE}/activities/{act.id}",
+                            headers={"Authorization": f"Bearer {access_token}"},
+                        )
+
+                    if resp.status_code == 429:
+                        yield f"data: {json.dumps({'status': 'rate_limit', 'checked': checked, 'total': total, 'found': found})}\n\n"
+                        return
+
+                    # Read rate limit usage headers — back off if >150 used in 15min window
+                    usage_header = resp.headers.get("X-RateLimit-Usage", "0,0")
+                    short_usage = int(usage_header.split(",")[0]) if "," in usage_header else 0
+                    delay = BASE_DELAY if short_usage < 150 else 15.0
+
+                    if resp.status_code == 200:
+                        data = resp.json()
+
+                        splits = [{"split": s.get("split"), "distance": s.get("distance"),
+                            "moving_time": s.get("moving_time"), "elapsed_time": s.get("elapsed_time"),
+                            "elevation_difference": s.get("elevation_difference"),
+                            "average_heartrate": s.get("average_heartrate"), "pace_zone": s.get("pace_zone")}
+                            for s in data.get("splits_metric", [])]
+
+                        best_efforts = [{"name": b.get("name"), "elapsed_time": b.get("elapsed_time"),
+                            "distance": b.get("distance"), "pr_rank": b.get("pr_rank")}
+                            for b in data.get("best_efforts", [])]
+
+                        segs = []
+                        hit = False
+                        for se in data.get("segment_efforts", []):
+                            seg = se.get("segment", {})
+                            sid = seg.get("id")
+                            segs.append({
+                                "segment_id": sid, "name": seg.get("name"),
+                                "distance": seg.get("distance"), "average_grade": seg.get("average_grade"),
+                                "elapsed_time": se.get("elapsed_time"), "moving_time": se.get("moving_time"),
+                                "pr_rank": se.get("pr_rank"),
+                                "achievements": [a.get("type_id") for a in se.get("achievements", [])],
+                                "start_latlng": seg.get("start_latlng"), "end_latlng": seg.get("end_latlng"),
+                                "polyline": seg.get("map", {}).get("polyline") or seg.get("map", {}).get("summary_polyline"),
+                            })
+                            if sid == segment_id:
+                                hit = True
+
+                        fresh_db = SessionLocal()
+                        try:
+                            fresh_act = fresh_db.query(Activity).filter_by(id=act.id).first()
+                            if fresh_act:
+                                fresh_act.description = data.get("description") or ""
+                                fresh_act.splits_metric = json.dumps(splits)
+                                fresh_act.best_efforts = json.dumps(best_efforts)
+                                fresh_act.segment_efforts = json.dumps(segs)
+                                fresh_act.detail_fetched = True
+                                fresh_db.commit()
+                        finally:
+                            fresh_db.close()
+
+                        if hit:
+                            found += 1
+
+                except Exception:
+                    delay = BASE_DELAY  # don't stall on errors
+
+                checked += 1
+                yield f"data: {json.dumps({'status': 'progress', 'checked': checked, 'total': total, 'found': found})}\n\n"
+                await asyncio.sleep(delay)
+
+            yield f"data: {json.dumps({'status': 'done', 'checked': checked, 'total': total, 'found': found})}\n\n"
+
+        finally:
+            db.close()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

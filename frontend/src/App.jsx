@@ -13,7 +13,9 @@ const hms = (s) => {
   if (!s) return "–";
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  const sec = Math.floor(s % 60);
+  if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
+  return `${m}:${sec.toString().padStart(2, "0")}`;
 };
 const pace = (ms, distM) => {
   if (!ms || !distM) return "–";
@@ -273,27 +275,418 @@ function ActivityMap({ polyline, activityId }) {
   return <div ref={mapRef} style={{ height: 240, borderRadius: 12, overflow: "hidden", marginBottom: 20 }} />;
 }
 
+// ── Map with optional segment highlight ────────────────────────────────────
+// Finds the nearest points on the decoded route to the segment's
+// start_latlng and end_latlng, then highlights that slice in orange.
+function distSq(a, b) {
+  const dlat = a[0] - b[0], dlng = a[1] - b[1];
+  return dlat * dlat + dlng * dlng;
+}
+function nearestIdx(points, target) {
+  let best = 0, bestD = Infinity;
+  for (let i = 0; i < points.length; i++) {
+    const d = distSq(points[i], target);
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+function ActivityMapWithSegment({ polyline, activityId, height = 240, segment }) {
+  const mapRef = useRef(null);
+  const mapInstanceRef = useRef(null);
+  const segmentLayerRef = useRef(null);
+  const routePointsRef = useRef([]);
+
+  // Init map once
+  useEffect(() => {
+    if (!polyline || !mapRef.current) return;
+
+    if (!document.getElementById("leaflet-css")) {
+      const link = document.createElement("link");
+      link.id = "leaflet-css"; link.rel = "stylesheet";
+      link.href = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css";
+      document.head.appendChild(link);
+    }
+
+    const initMap = () => {
+      if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; }
+      const L = window.L;
+      const points = decodePolyline(polyline);
+      if (!points.length) return;
+      routePointsRef.current = points;
+
+      const map = L.map(mapRef.current, { zoomControl: true, attributionControl: false });
+      mapInstanceRef.current = map;
+
+      L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", { maxZoom: 19 }).addTo(map);
+
+      const route = L.polyline(points, { color: "#00D4AA", weight: 3, opacity: 0.7 }).addTo(map);
+      L.circleMarker(points[0], { radius: 6, fillColor: "#00D4AA", color: "#fff", weight: 2, fillOpacity: 1 }).addTo(map);
+      L.circleMarker(points[points.length - 1], { radius: 6, fillColor: "#FF3B6B", color: "#fff", weight: 2, fillOpacity: 1 }).addTo(map);
+
+      map.fitBounds(route.getBounds(), { padding: [16, 16] });
+    };
+
+    if (window.L) { initMap(); }
+    else {
+      const script = document.createElement("script");
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js";
+      script.onload = initMap;
+      document.head.appendChild(script);
+    }
+
+    return () => { if (mapInstanceRef.current) { mapInstanceRef.current.remove(); mapInstanceRef.current = null; } };
+  }, [polyline]);
+
+  // Update segment overlay whenever selected segment changes
+  useEffect(() => {
+    if (!mapInstanceRef.current || !window.L) return;
+    const L = window.L;
+
+    if (segmentLayerRef.current) {
+      mapInstanceRef.current.removeLayer(segmentLayerRef.current);
+      segmentLayerRef.current = null;
+    }
+
+    if (!segment) return;
+
+    const points = routePointsRef.current;
+    if (!points.length) return;
+
+    const startLL = segment.start_latlng;
+    const endLL = segment.end_latlng;
+    if (!startLL || !endLL) return;
+
+    // Find closest points on route to segment start/end
+    let startIdx = nearestIdx(points, startLL);
+    let endIdx = nearestIdx(points, endLL);
+    if (startIdx > endIdx) [startIdx, endIdx] = [endIdx, startIdx];
+
+    // Need at least 2 points
+    const segSlice = points.slice(startIdx, endIdx + 1);
+    if (segSlice.length < 2) return;
+
+    const segLayer = L.layerGroup();
+    L.polyline(segSlice, { color: "#FF6B2B", weight: 6, opacity: 0.9 }).addTo(segLayer);
+    L.circleMarker(segSlice[0], { radius: 7, fillColor: "#FF6B2B", color: "#fff", weight: 2, fillOpacity: 1 }).addTo(segLayer);
+    L.circleMarker(segSlice[segSlice.length - 1], { radius: 7, fillColor: "#FFD700", color: "#fff", weight: 2, fillOpacity: 1 }).addTo(segLayer);
+
+    segLayer.addTo(mapInstanceRef.current);
+    segmentLayerRef.current = segLayer;
+
+    try {
+      const bounds = L.latLngBounds(segSlice);
+      mapInstanceRef.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 16 });
+    } catch (e) {}
+  }, [segment]);
+
+  if (!polyline) return (
+    <div style={{ height, borderRadius: 12, background: "rgba(255,255,255,0.04)", display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.2)", fontSize: 13 }}>
+      No GPS data available
+    </div>
+  );
+
+  return <div ref={mapRef} style={{ height, borderRadius: 12, overflow: "hidden" }} />;
+}
+
+// ── Backfill control component ───────────────────────────────────────────────
+function BackfillControl({ segmentId, backfill, onStart }) {
+  const isRunning = backfill && (backfill.status === "start" || backfill.status === "progress");
+  const isDone = backfill?.status === "done";
+  const isRateLimit = backfill?.status === "rate_limit";
+  const isError = backfill?.status === "error";
+  const pct = backfill?.total > 0 ? Math.round((backfill.checked / backfill.total) * 100) : 0;
+
+  if (isDone && backfill.total === 0) return (
+    <div style={{ fontSize: 12, color: "rgba(255,255,255,0.25)" }}>All activities already fetched.</div>
+  );
+
+  return (
+    <div style={{ marginTop: 4 }}>
+      {!isRunning && !isDone && !isRateLimit && !isError && (
+        <div>
+          <button
+            onClick={() => onStart(segmentId)}
+            style={{ background: "rgba(0,212,170,0.1)", border: "1px solid rgba(0,212,170,0.3)", borderRadius: 8, padding: "6px 14px", color: "#00D4AA", fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+          >
+            🔍 Find previous efforts
+          </button>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.2)", marginTop: 5, lineHeight: 1.5 }}>
+            Scans un-fetched activities for this segment. Strava's free API allows ~10 requests/min,
+            so this may take a while if you have a large backlog — you can leave it running in the background.
+          </div>
+        </div>
+      )}
+      {isRunning && (
+        <div style={{ minWidth: 220 }}>
+          <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginBottom: 5 }}>
+            Checking activities… {backfill.checked}/{backfill.total} — {backfill.found} found
+            <span style={{ color: "rgba(255,255,255,0.25)", marginLeft: 8 }}>
+              (~{Math.ceil((backfill.total - backfill.checked) * 6 / 60)}min remaining)
+            </span>
+          </div>
+          <div style={{ height: 4, background: "rgba(255,255,255,0.08)", borderRadius: 4, overflow: "hidden" }}>
+            <div style={{ height: "100%", width: `${pct}%`, background: "#00D4AA", borderRadius: 4, transition: "width 0.4s ease" }} />
+          </div>
+        </div>
+      )}
+      {isDone && (
+        <div style={{ fontSize: 12, color: backfill.found > 0 ? "#00D4AA" : "rgba(255,255,255,0.3)" }}>
+          {backfill.found > 0
+            ? `✓ Found ${backfill.found} effort${backfill.found > 1 ? "s" : ""} across ${backfill.checked} activities`
+            : `✓ Checked ${backfill.checked} activities — no additional efforts found`}
+        </div>
+      )}
+      {isRateLimit && (
+        <div style={{ fontSize: 12, color: "#FFB347" }}>
+          ⏱ Strava rate limit reached after {backfill.checked}/{backfill.total} activities.
+          <button onClick={() => onStart(segmentId)} style={{ marginLeft: 8, background: "none", border: "1px solid #FFB347", borderRadius: 6, padding: "2px 8px", color: "#FFB347", fontSize: 11, cursor: "pointer" }}>Retry</button>
+        </div>
+      )}
+      {isError && (
+        <div style={{ fontSize: 12, color: "#FF6B6B" }}>
+          Something went wrong.
+          <button onClick={() => onStart(segmentId)} style={{ marginLeft: 8, background: "none", border: "1px solid #FF6B6B", borderRadius: 6, padding: "2px 8px", color: "#FF6B6B", fontSize: 11, cursor: "pointer" }}>Retry</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Segments Panel (shared by modal and detail page) ─────────────────────────
+function formatDelta(diffSec) {
+  if (diffSec === 0) return "New ✨";
+  const abs = Math.abs(diffSec);
+  const m = Math.floor(abs / 60);
+  const s = abs % 60;
+  const sign = diffSec < 0 ? "-" : "+";
+  return m > 0
+    ? `${sign}${m}:${s.toString().padStart(2, "0")}`
+    : `${sign}${s}s`;
+}
+
+function SegmentsPanel({ segments, loading, error, routePolyline, activityId, athleteId, selectedSegment, onSelectSegment, mapHeight = 200, compact = false }) {
+  const [segHistory, setSegHistory] = useState({});
+  const [historyLoading, setHistoryLoading] = useState({});
+  const [backfill, setBackfill] = useState(null); // null | { status, checked, total, found }
+  const backfillRef = useRef(null);
+  const pad = compact ? "9px 10px" : "10px 12px";
+
+  // Fetch history when a segment with a segment_id is selected
+  useEffect(() => {
+    if (!selectedSegment?.segment_id) return;
+    const sid = selectedSegment.segment_id;
+    if (segHistory[sid] !== undefined || historyLoading[sid]) return;
+    setHistoryLoading(h => ({ ...h, [sid]: true }));
+    fetch(`${API}/api/segments/${athleteId}/${sid}/history`)
+      .then(r => r.json())
+      .then(d => setSegHistory(h => ({ ...h, [sid]: d.efforts || [] })))
+      .catch(() => setSegHistory(h => ({ ...h, [sid]: [] })))
+      .finally(() => setHistoryLoading(h => ({ ...h, [sid]: false })));
+  }, [selectedSegment, athleteId]);
+
+  const startBackfill = (segmentId) => {
+    if (backfillRef.current) backfillRef.current.close();
+    setBackfill({ status: "start", checked: 0, total: 0, found: 0 });
+
+    const es = new EventSource(`${API}/api/segments/${athleteId}/${segmentId}/backfill`);
+    backfillRef.current = es;
+
+    es.onmessage = (e) => {
+      const data = JSON.parse(e.data);
+      setBackfill(data);
+      if (data.status === "done" || data.status === "rate_limit") {
+        es.close();
+        // Refresh history for this segment
+        setHistoryLoading(h => ({ ...h, [segmentId]: true }));
+        fetch(`${API}/api/segments/${athleteId}/${segmentId}/history`)
+          .then(r => r.json())
+          .then(d => setSegHistory(h => ({ ...h, [segmentId]: d.efforts || [] })))
+          .catch(() => {})
+          .finally(() => setHistoryLoading(h => ({ ...h, [segmentId]: false })));
+      }
+    };
+    es.onerror = () => {
+      setBackfill(b => ({ ...b, status: "error" }));
+      es.close();
+    };
+  };
+
+  // Cleanup SSE on unmount
+  useEffect(() => () => { if (backfillRef.current) backfillRef.current.close(); }, []);
+
+  if (loading) return <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>Loading segments...</div>;
+  if (error) return <div style={{ textAlign: "center", padding: 40, color: "#FF6B6B" }}>Could not load segments from Strava.</div>;
+
+  const safeSegments = Array.isArray(segments) ? segments : [];
+  if (!safeSegments.length) return <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>No segments recorded for this activity.</div>;
+
+  return (
+    <div>
+      {/* Map */}
+      {routePolyline && mapHeight && (
+        <div style={{ marginBottom: 14 }}>
+          <ActivityMapWithSegment polyline={routePolyline} activityId={activityId} height={mapHeight} segment={selectedSegment || null} />
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.25)", textAlign: "center", marginTop: 6 }}>
+            {selectedSegment
+              ? <><span style={{ color: "#FF6B2B" }}>{selectedSegment.name}</span> — click again to clear</>
+              : "Click a segment row to highlight it on the map"}
+          </div>
+        </div>
+      )}
+
+      {/* History panel for selected segment */}
+      {selectedSegment?.segment_id && (
+        <div style={{ background: "rgba(255,107,43,0.07)", border: "1px solid rgba(255,107,43,0.2)", borderRadius: 12, padding: "12px 16px", marginBottom: 14 }}>
+          <div style={{ fontSize: 11, color: "#FF6B2B", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 8 }}>
+            All efforts on "{selectedSegment.name}"
+          </div>
+          {historyLoading[selectedSegment.segment_id] && (
+            <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 13 }}>Loading history...</div>
+          )}
+          {!historyLoading[selectedSegment.segment_id] && segHistory[selectedSegment.segment_id] && (
+            (() => {
+              const hist = segHistory[selectedSegment.segment_id];
+              if (hist === "rate_limit") return (
+                <div style={{ color: "#FFB347", fontSize: 13 }}>⏱ Strava rate limit reached — try again in a minute.</div>
+              );
+              const safeHist = Array.isArray(hist) ? hist : [];
+              return safeHist.length > 0 ? (
+              <div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+                  {safeHist.map((e, i) => {
+                    const isBest = i === 0;
+                    const bestTime = safeHist[0].elapsed_time;
+                    const delta = e.elapsed_time - bestTime;
+                    return (
+                      <div key={i} style={{
+                        background: isBest ? "rgba(255,215,0,0.1)" : "rgba(255,255,255,0.04)",
+                        border: `1px solid ${isBest ? "rgba(255,215,0,0.3)" : "rgba(255,255,255,0.08)"}`,
+                        borderRadius: 8, padding: "8px 12px", minWidth: 120,
+                      }}>
+                        <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginBottom: 3 }}>
+                          {new Date(e.date).toLocaleDateString("en-IE", { day: "numeric", month: "short", year: "2-digit" })}
+                          {isBest && <span style={{ color: "#FFD700", marginLeft: 6 }}>🥇 Best</span>}
+                        </div>
+                        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 700, color: isBest ? "#FFD700" : "#fff" }}>
+                          {hms(e.elapsed_time)}
+                        </div>
+                        {!isBest && (
+                          <div style={{ fontSize: 11, color: "#FF6B6B", marginTop: 2 }}>{formatDelta(delta)} off best</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <BackfillControl segmentId={selectedSegment.segment_id} backfill={backfill} onStart={startBackfill} />
+              </div>
+              ) : (
+                <div>
+                  <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 13, marginBottom: 10 }}>No history yet in cache.</div>
+                  <BackfillControl segmentId={selectedSegment.segment_id} backfill={backfill} onStart={startBackfill} />
+                </div>
+              );
+            })()
+          )}
+        </div>
+      )}
+
+      {/* Segments table */}
+      <div style={{ overflowY: "auto", maxHeight: compact ? 240 : 320, borderRadius: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead style={{ position: "sticky", top: 0, background: "#161b22", zIndex: 1 }}>
+            <tr style={{ color: "rgba(255,255,255,0.3)", fontSize: 11, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              <th style={{ textAlign: "left", padding: pad }}>Segment</th>
+              <th style={{ textAlign: "right", padding: pad }}>Dist</th>
+              <th style={{ textAlign: "right", padding: pad }}>Grade</th>
+              <th style={{ textAlign: "right", padding: pad }}>Time</th>
+              <th style={{ textAlign: "right", padding: pad }}>Rank</th>
+              <th style={{ textAlign: "right", padding: pad }}>Δ vs PR</th>
+            </tr>
+          </thead>
+          <tbody>
+            {safeSegments.map((s, i) => {
+              const isSelected = selectedSegment?.segment_id === s.segment_id && selectedSegment?.name === s.name;
+              const history = s.segment_id ? (Array.isArray(segHistory[s.segment_id]) ? segHistory[s.segment_id] : (segHistory[s.segment_id] === "rate_limit" ? "rate_limit" : null)) : null;
+              const isPR = s.pr_rank === 1;
+              const safeHistory = Array.isArray(history) ? history : [];
+              const prevBest = isPR ? safeHistory[1]?.elapsed_time : safeHistory[0]?.elapsed_time;
+              const delta = prevBest && s.elapsed_time ? s.elapsed_time - prevBest : null;
+
+              return (
+                <tr key={i}
+                  onClick={() => onSelectSegment(isSelected ? null : s)}
+                  style={{ borderTop: "1px solid rgba(255,255,255,0.05)", background: isSelected ? "rgba(255,107,43,0.12)" : i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.02)", cursor: "pointer", transition: "background 0.15s" }}
+                  onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = "rgba(255,255,255,0.06)"; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = isSelected ? "rgba(255,107,43,0.12)" : i % 2 === 0 ? "transparent" : "rgba(255,255,255,0.02)"; }}
+                >
+                  <td style={{ padding: pad, fontWeight: 600, maxWidth: 180 }}>
+                    <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: isSelected ? "#FF6B2B" : "#fff" }}>{s.name}</div>
+                  </td>
+                  <td style={{ padding: pad, textAlign: "right", color: "rgba(255,255,255,0.5)" }}>
+                    {s.distance ? `${(s.distance / 1000).toFixed(2)}km` : "–"}
+                  </td>
+                  <td style={{ padding: pad, textAlign: "right", color: s.average_grade > 0 ? "#FFB347" : s.average_grade < 0 ? "#7AE8D0" : "rgba(255,255,255,0.3)" }}>
+                    {s.average_grade != null ? `${s.average_grade > 0 ? "+" : ""}${s.average_grade.toFixed(1)}%` : "–"}
+                  </td>
+                  <td style={{ padding: pad, textAlign: "right", fontFamily: "'Barlow Condensed', sans-serif", fontSize: 16, fontWeight: 700 }}>
+                    {hms(s.elapsed_time)}
+                  </td>
+                  <td style={{ padding: pad, textAlign: "right" }}>
+                    {isPR ? <span style={{ color: "#FFD700", fontWeight: 700 }}>🥇 PR</span>
+                     : s.pr_rank === 2 ? <span style={{ color: "#C0C0C0" }}>🥈 2nd</span>
+                     : s.pr_rank === 3 ? <span style={{ color: "#CD7F32" }}>🥉 3rd</span>
+                     : s.pr_rank ? <span style={{ color: "rgba(255,255,255,0.4)" }}>#{s.pr_rank}</span>
+                     : <span style={{ color: "rgba(255,255,255,0.2)" }}>–</span>}
+                  </td>
+                  <td style={{ padding: pad, textAlign: "right", fontSize: 12 }}>
+                    {historyLoading[s.segment_id]
+                      ? <span style={{ color: "rgba(255,255,255,0.2)" }}>...</span>
+                      : history === null
+                        ? <span style={{ color: "rgba(255,255,255,0.2)", fontSize: 11 }}>click row</span>
+                      : history === "rate_limit"
+                        ? <span style={{ color: "#FFB347", fontSize: 11 }}>⏱ retry</span>
+                        : !s.pr_rank && history.length <= 1
+                          ? <span style={{ color: "#7AE8D0", fontWeight: 600 }}>New ✨</span>
+                          : delta !== null
+                            ? <span style={{ color: delta < 0 ? "#00D4AA" : "#FF6B6B", fontWeight: 600 }}>{formatDelta(delta)}</span>
+                            : <span style={{ color: "rgba(255,255,255,0.15)" }}>–</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function ActivityModal({ act, athleteId, onClose, onOpenDetail }) {
   const [gpxLoading, setGpxLoading] = useState(false);
   const [tab, setTab] = useState("overview");
   const [detail, setDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [selectedSegment, setSelectedSegment] = useState(null);
 
   useEffect(() => {
     setTab("overview");
     setDetail(null);
+    setSelectedSegment(null);
   }, [act?.id]);
 
+  // Fetch detail immediately on open (silent background fetch)
+  // so splits/segments are ready when tabs are clicked, and older
+  // activities get cached even if the user only views the overview.
   useEffect(() => {
-    if ((tab === "splits" || tab === "efforts") && !detail && act) {
-      setDetailLoading(true);
-      fetch(`${API}/api/activity/${athleteId}/${act.id}/detail`)
-        .then(r => r.json())
-        .then(d => setDetail(d))
-        .catch(() => setDetail({ error: true }))
-        .finally(() => setDetailLoading(false));
-    }
-  }, [tab, act, athleteId, detail]);
+    if (!act) return;
+    setDetailLoading(true);
+    fetch(`${API}/api/activity/${athleteId}/${act.id}/detail`)
+      .then(r => r.json())
+      .then(d => setDetail(d))
+      .catch(() => setDetail({ error: true }))
+      .finally(() => setDetailLoading(false));
+  }, [act?.id, athleteId]);
 
   if (!act) return null;
   const running = isRun(act.sport_type);
@@ -333,6 +726,7 @@ function ActivityModal({ act, athleteId, onClose, onOpenDetail }) {
     { id: "overview", label: "Overview" },
     { id: "splits",   label: "Splits" },
     { id: "efforts",  label: "Best Efforts" },
+    { id: "segments", label: "Segments" },
   ];
 
   return (
@@ -398,7 +792,7 @@ function ActivityModal({ act, athleteId, onClose, onOpenDetail }) {
         {tab === "overview" && (
           <>
             {act.map_summary_polyline && (
-              <ActivityMap polyline={act.map_summary_polyline} activityId={act.id} />
+              <ActivityMapWithSegment polyline={act.map_summary_polyline} activityId={act.id} height={240} segment={null} />
             )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
               {[
@@ -553,6 +947,21 @@ function ActivityModal({ act, athleteId, onClose, onOpenDetail }) {
             )}
           </div>
         )}
+
+        {/* ── SEGMENTS TAB ── */}
+        {tab === "segments" && (
+          <SegmentsPanel
+            segments={detail?.segment_efforts}
+            loading={detailLoading}
+            error={detail?.error}
+            routePolyline={act.map_summary_polyline}
+            activityId={act.id}
+            athleteId={athleteId}
+            selectedSegment={selectedSegment}
+            onSelectSegment={setSelectedSegment}
+            mapHeight={200}
+          />
+        )}
       </div>
     </div>
   );
@@ -563,6 +972,7 @@ function ActivityDetailPage({ act, athleteId, onBack }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("splits");
+  const [selectedSegment, setSelectedSegment] = useState(null);
 
   useEffect(() => {
     if (!act) return;
@@ -634,16 +1044,24 @@ function ActivityDetailPage({ act, athleteId, onBack }) {
           {/* Map */}
           <div>
             {act.map_summary_polyline
-              ? <ActivityMap polyline={act.map_summary_polyline} activityId={act.id} height={400} />
+              ? <ActivityMapWithSegment polyline={act.map_summary_polyline} activityId={act.id} height={400} segment={selectedSegment || null} />
               : <div style={{ height: 400, background: "rgba(255,255,255,0.03)", borderRadius: 16, display: "flex", alignItems: "center", justifyContent: "center", color: "rgba(255,255,255,0.2)" }}>No GPS data</div>
             }
+            {selectedSegment && (
+              <div style={{ marginTop: 8, fontSize: 12, color: "#FF6B2B", textAlign: "center" }}>
+                📍 {selectedSegment.name}
+              </div>
+            )}
+            {!selectedSegment && act.map_summary_polyline && detail?.segment_efforts?.length > 0 && tab === "segments" && (
+              <div style={{ marginTop: 8, fontSize: 11, color: "rgba(255,255,255,0.25)", textAlign: "center" }}>Click a segment to highlight it</div>
+            )}
           </div>
 
           {/* Splits / Best Efforts */}
           <div style={{ background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 16, padding: 20, overflow: "hidden" }}>
             {/* Tab bar */}
             <div style={{ display: "flex", gap: 4, marginBottom: 16, borderBottom: "1px solid rgba(255,255,255,0.08)", paddingBottom: 0 }}>
-              {[{ id: "splits", label: "Km Splits" }, { id: "efforts", label: "Best Efforts" }].map(t => (
+              {[{ id: "splits", label: "Km Splits" }, { id: "efforts", label: "Best Efforts" }, { id: "segments", label: "Segments" }].map(t => (
                 <button key={t.id} onClick={() => setTab(t.id)} style={{
                   padding: "7px 16px", borderRadius: "6px 6px 0 0", border: "none",
                   background: tab === t.id ? "rgba(0,212,170,0.12)" : "transparent",
@@ -751,6 +1169,21 @@ function ActivityDetailPage({ act, athleteId, onBack }) {
                   </table>
                 ) : <div style={{ textAlign: "center", padding: 40, color: "rgba(255,255,255,0.3)" }}>No best efforts recorded.</div>}
               </div>
+            )}
+
+            {!loading && detail && !detail.error && tab === "segments" && (
+              <SegmentsPanel
+                segments={detail?.segment_efforts}
+                loading={false}
+                error={detail?.error}
+                routePolyline={act.map_summary_polyline}
+                activityId={act.id}
+                athleteId={athleteId}
+                selectedSegment={selectedSegment}
+                onSelectSegment={setSelectedSegment}
+                mapHeight={null}
+                compact={true}
+              />
             )}
           </div>
         </div>

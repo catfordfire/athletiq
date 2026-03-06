@@ -10,6 +10,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.0] - 2026-03-06
+
+### Added
+- **Strava segments** — new Segments tab in both the activity modal and full detail page, showing all segments recorded on a run with distance, grade, time, and PR rank
+- **Segment map highlighting** — click any segment row to highlight it on the route map in orange, with start/end markers and automatic zoom; click again to clear
+- **Segment history & delta** — click a segment row to load all cached efforts on that segment, with a Δ vs PR column showing improvement or decline vs your best cached time
+- **"New ✨" indicator** — segments with no prior `pr_rank` from Strava and no cached history are marked as first efforts
+- **"Find previous efforts" backfill** — button in the segment history panel that silently scans all un-fetched activities for efforts on the selected segment, with a live progress bar and time remaining estimate
+- **Silent detail fetch on modal open** — activity detail (splits, best efforts, segments) is now fetched and cached automatically whenever any activity modal is opened, even on the Overview tab, so browsing older activities builds up history naturally
+- All times across the app now display in precise `h:mm:ss` / `m:ss` format
+- New backend endpoint `GET /api/segments/{athlete_id}/{segment_id}/history` — scans cached activity detail for efforts on a given segment
+- New backend endpoint `GET /api/segments/{athlete_id}/{segment_id}/backfill` — SSE stream that progressively fetches un-cached activity details and reports progress
+- New `segment_history` database table for future use
+
+### Changed
+- Segment delta column: PRs show improvement vs previous best; non-PRs show gap to best; genuine first efforts show "New ✨"
+- Backfill now runs sequentially at ~10 requests/min with dynamic backoff based on Strava rate limit headers, avoiding rate limit errors
+- Segments table has a fixed max-height with independent scrolling so map and controls above remain accessible on activities with many segments
+- Segment table headers are now sticky when scrolling
+- `hms()` helper updated to always return precise `h:mm:ss` or `m:ss`
+
+### Known limitations
+- Full segment effort history requires Strava Summit (paid) — the `/segment_efforts` endpoint returns HTTP 402 on free accounts. History is built from locally cached activities instead
+- See README for full Strava API limitations
+
+---
+
 ## [1.1.0] - 2026-02-27
 
 ### Added

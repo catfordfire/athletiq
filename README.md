@@ -24,7 +24,7 @@ A privacy-first alternative to Veloviewer — all your training data, owned by y
 | 📉 **Progression** | Scatter plot of pace over time, multi-route map overlay, time period filtering |
 | 🏅 **Race History** | Filter by distance preset or custom range, count summary, best pace highlighting |
 | 📋 **Activities** | Paginated activity log with year/sport filters |
-| 🗺️ **Activity detail** | Route map, tabbed km splits, best efforts with PR medals, activity description, GPX download |
+| 🗺️ **Activity detail** | Route map, tabbed km splits, best efforts, segments with map highlighting and history delta, activity description, GPX download |
 | ⬇ **Export** | Full CSV export of all activities |
 
 **Everything runs on your own hardware.** No third-party servers, no subscriptions, no ads.
@@ -152,6 +152,50 @@ Your athlete ID appears in the URL after you first connect — or find it at `st
 
 ---
 
+## ⚠️ Strava API Limitations
+
+Athletiq is built on Strava's **free API tier**. This is intentional — no subscription required — but it does mean certain things work differently from paid tools like Veloviewer or Strava Summit.
+
+### What works fully
+
+| Feature | How it works |
+|---|---|
+| Activity sync | Full history via paginated API — no restrictions |
+| Km splits | Fetched from activity detail endpoint, cached locally |
+| Best efforts | Fetched from activity detail endpoint, cached locally |
+| Segment efforts per activity | Included in the activity detail response |
+| Segment map highlighting | Derived from route GPS + segment start/end coordinates — no extra API call |
+| Segment history delta | Scanned from locally cached activity details |
+| Backfill scan | Progressively fetches un-cached activities in the background |
+
+### What is restricted by Strava
+
+| Feature | Reason | Workaround |
+|---|---|---|
+| Full segment effort history | `/segment_efforts` requires Strava Summit (paid) — returns HTTP 402 on free accounts | History builds automatically as you open activities; use "Find previous efforts" to scan the backlog |
+| Segment leaderboards | Restricted endpoint | Not implemented |
+| Athlete heart rate zones | Restricted endpoint | Not implemented |
+
+### Segment history depth
+
+The Δ vs PR column in the Segments tab is powered by scanning your **locally cached activity data**. This means:
+
+- The more activities you have opened in Athletiq, the richer the history becomes
+- Every time you open an activity modal, its detail is fetched and cached automatically — even on the Overview tab
+- Use the **🔍 Find previous efforts** button on any segment to scan all remaining un-fetched activities in the background
+- A segment marked `🥇 PR` by Strava but showing `–` delta simply means the previous effort hasn't been cached yet — it is a genuine PR
+
+### Rate limits
+
+Strava imposes a limit of **200 requests per 15 minutes** and **2,000 per day** on the free tier. Athletiq manages this carefully:
+
+- Normal browsing uses very few requests (one per activity opened)
+- The backfill scan runs at ~10 requests/min with automatic backoff if limits are approached
+- A full backfill of a large history (e.g. 500 un-fetched activities) takes ~50 minutes and should be left running in a background tab
+- If rate limited mid-backfill, a Retry button appears and the scan resumes from where it left off next time
+
+---
+
 ## 📡 API Endpoints
 
 The backend exposes a REST API at `http://NAS_IP:BACKEND_PORT`:
@@ -165,7 +209,9 @@ The backend exposes a REST API at `http://NAS_IP:BACKEND_PORT`:
 | `GET /api/fitness/{id}` | CTL/ATL/TSB fitness data |
 | `POST /api/sync/{id}` | Trigger activity sync |
 | `GET /api/status/{id}` | Sync status |
-| `GET /api/activity/{id}/{activity_id}/detail` | Km splits, best efforts, description (cached) |
+| `GET /api/activity/{id}/{activity_id}/detail` | Km splits, best efforts, segments, description (cached) |
+| `GET /api/segments/{id}/{segment_id}/history` | Scan cached activities for efforts on a segment |
+| `GET /api/segments/{id}/{segment_id}/backfill` | SSE stream — progressively fetch un-cached activity details |
 | `GET /api/activity/{id}/{activity_id}/gpx` | Download GPX file |
 | `GET /api/export/{id}/csv` | Export all activities as CSV |
 
