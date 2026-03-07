@@ -551,38 +551,67 @@ function SegmentsPanel({ segments, loading, error, routePolyline, activityId, at
                 <div style={{ color: "#FFB347", fontSize: 13 }}>⏱ Strava rate limit reached — try again in a minute.</div>
               );
               const safeHist = Array.isArray(hist) ? hist : [];
-              return safeHist.length > 0 ? (
-              <div>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-                  {safeHist.map((e, i) => {
-                    const isBest = i === 0;
-                    const bestTime = safeHist[0].elapsed_time;
-                    const delta = e.elapsed_time - bestTime;
-                    return (
-                      <div key={i} style={{
-                        background: isBest ? "rgba(255,215,0,0.1)" : "rgba(255,255,255,0.04)",
-                        border: `1px solid ${isBest ? "rgba(255,215,0,0.3)" : "rgba(255,255,255,0.08)"}`,
-                        borderRadius: 8, padding: "8px 12px", minWidth: 120,
-                      }}>
-                        <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginBottom: 3 }}>
-                          {new Date(e.date).toLocaleDateString("en-IE", { day: "numeric", month: "short", year: "2-digit" })}
-                          {isBest && <span style={{ color: "#FFD700", marginLeft: 6 }}>🥇 Best</span>}
-                        </div>
-                        <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 700, color: isBest ? "#FFD700" : "#fff" }}>
-                          {hms(e.elapsed_time)}
-                        </div>
-                        {!isBest && (
-                          <div style={{ fontSize: 11, color: "#FF6B6B", marginTop: 2 }}>{formatDelta(delta)} off best</div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-                <BackfillControl segmentId={selectedSegment.segment_id} backfill={backfill} onStart={startBackfill} />
-              </div>
-              ) : (
+              if (safeHist.length === 0) return (
                 <div>
                   <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 13, marginBottom: 10 }}>No history yet in cache.</div>
+                  <BackfillControl segmentId={selectedSegment.segment_id} backfill={backfill} onStart={startBackfill} />
+                </div>
+              );
+
+              // Current effort = this activity's time for the segment
+              const currentTime = selectedSegment.elapsed_time;
+              // Best = fastest across all history
+              const bestTime = Math.min(...safeHist.map(e => e.elapsed_time));
+              const bestEffort = safeHist.find(e => e.elapsed_time === bestTime);
+              // Previous = all history entries sorted most-recent-first, excluding the best (shown separately)
+              const previous = [...safeHist]
+                .sort((a, b) => new Date(b.date) - new Date(a.date))
+                .filter(e => e !== bestEffort);
+
+              const fmtDate = d => new Date(d).toLocaleDateString("en-IE", { day: "numeric", month: "short", year: "2-digit" });
+
+              const card = (label, time, date, highlight, extraLabel) => (
+                <div style={{
+                  background: highlight ? "rgba(255,215,0,0.1)" : "rgba(255,255,255,0.04)",
+                  border: `1px solid ${highlight ? "rgba(255,215,0,0.3)" : "rgba(255,255,255,0.08)"}`,
+                  borderRadius: 8, padding: "8px 12px", minWidth: 120,
+                }}>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginBottom: 3 }}>
+                    {date ? fmtDate(date) : "this activity"}
+                    {extraLabel && <span style={{ color: highlight ? "#FFD700" : "#00D4AA", marginLeft: 6 }}>{extraLabel}</span>}
+                  </div>
+                  <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 700, color: highlight ? "#FFD700" : "#fff" }}>
+                    {hms(time)}
+                  </div>
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.25)", marginTop: 1 }}>{label}</div>
+                </div>
+              );
+
+              return (
+                <div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+                    {/* Current */}
+                    {currentTime && card("this activity", currentTime, null, false, null)}
+                    {/* Best */}
+                    {bestEffort && card("best", bestTime, bestEffort.date, true, "🥇 Best")}
+                    {/* Previous, most recent first */}
+                    {previous.map((e, i) => {
+                      const delta = e.elapsed_time - bestTime;
+                      return (
+                        <div key={i} style={{
+                          background: "rgba(255,255,255,0.04)",
+                          border: "1px solid rgba(255,255,255,0.08)",
+                          borderRadius: 8, padding: "8px 12px", minWidth: 120,
+                        }}>
+                          <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginBottom: 3 }}>{fmtDate(e.date)}</div>
+                          <div style={{ fontFamily: "'Barlow Condensed', sans-serif", fontSize: 18, fontWeight: 700, color: "#fff" }}>
+                            {hms(e.elapsed_time)}
+                          </div>
+                          <div style={{ fontSize: 11, color: "#FF6B6B", marginTop: 2 }}>{formatDelta(delta)} off best</div>
+                        </div>
+                      );
+                    })}
+                  </div>
                   <BackfillControl segmentId={selectedSegment.segment_id} backfill={backfill} onStart={startBackfill} />
                 </div>
               );
