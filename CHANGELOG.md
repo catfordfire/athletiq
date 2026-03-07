@@ -10,6 +10,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.4] - 2026-03-07
+
+### Added
+- **Segment history reordered** — history panel now shows: current effort → best (gold, 🥇) → previous efforts by date descending, most recent first
+- **Backfill resume button** — appears in the sidebar automatically when the background backfill stalls (no progress for >60s) or errors, allowing one-click restart without SSH
+- `POST /api/backfill/resume/{athlete_id}` endpoint resets and restarts a stalled or errored backfill task
+
+### Changed
+- Backfill base delay reduced from 6s to 3s (~20 requests/min); dynamic backoff threshold raised to 170/200 — Strava rate limits are per-application, not per-subscription tier
+- Stale backfill threshold reduced from 5 minutes to 60 seconds before Resume button appears
+- Background backfill now distinguishes between 15-minute and daily rate limits — sleeps until next 15-min boundary on short-term limit, and until midnight UTC on daily cap
+- Backfill total calculated dynamically in status endpoint to avoid stale snapshot (fixes `633/616`-style overcount)
+- `docker-compose.yml` healthcheck now specifies `-d athletiq` to prevent noisy "database velosyno does not exist" log errors
+
+### Fixed
+- `delay` variable undefined when HTTP request threw an exception before rate limit headers were read, causing silent backfill crash
+- Activities returning 4xx (deleted/private) now marked as `detail_fetched = True` to prevent infinite retry loop
+- Resume endpoint used `asyncio.create_task` in sync context — switched to `BackgroundTasks` for reliable task spawning
+- In-memory lock (`backfill_running` set) prevents concurrent backfill tasks from spawning on multiple Resume clicks, which previously caused immediate rate limit cascade
+- Fatal backfill exceptions now logged rather than silently swallowed
+
+---
+
 ## [1.2.0] - 2026-03-06
 
 ### Added
