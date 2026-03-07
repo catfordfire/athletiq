@@ -28,7 +28,7 @@ services:
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U velosyno"]
+      test: ["CMD-SHELL", "pg_isready -U velosyno -d athletiq"]
       interval: 10s
       timeout: 5s
       retries: 5
