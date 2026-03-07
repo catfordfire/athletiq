@@ -2310,9 +2310,25 @@ export default function App() {
                   transition: "width 1s ease",
                 }} />
               </div>
-              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", marginTop: 4 }}>
-                Runs in background — safe to close this tab
-              </div>
+              {(() => {
+                const stale = backfillStatus.updated_at &&
+                  (Date.now() - new Date(backfillStatus.updated_at).getTime()) > 5 * 60 * 1000;
+                const showResume = backfillStatus.status === "error" || stale;
+                return showResume ? (
+                  <button
+                    onClick={() => fetch(`${API}/api/backfill/resume/${athleteId}`, { method: "POST" })
+                      .then(() => setBackfillStatus(s => ({ ...s, status: "pending" })))}
+                    style={{ marginTop: 8, fontSize: 11, padding: "3px 10px", borderRadius: 4,
+                      background: "rgba(0,212,170,0.15)", border: "1px solid rgba(0,212,170,0.3)",
+                      color: "#00D4AA", cursor: "pointer" }}>
+                    ↺ Resume
+                  </button>
+                ) : (
+                  <div style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", marginTop: 4 }}>
+                    Runs in background — safe to close this tab
+                  </div>
+                );
+              })()}
             </div>
           )}
           {backfillStatus?.status === "done" && backfillStatus.checked > 0 && (

@@ -468,6 +468,25 @@ def get_backfill_status(athlete_id: int):
         db.close()
 
 
+@app.post("/api/backfill/resume/{athlete_id}")
+async def resume_backfill(athlete_id: int):
+    """Reset a stalled or errored backfill and restart it."""
+    db = SessionLocal()
+    try:
+        task = db.query(BackfillTask).filter_by(athlete_id=athlete_id).first()
+        if not task:
+            raise HTTPException(status_code=404, detail="No backfill task found")
+        if task.status == "done":
+            return {"message": "Already complete"}
+        task.status = "pending"
+        task.updated_at = datetime.utcnow()
+        db.commit()
+        asyncio.create_task(run_background_backfill(athlete_id))
+        return {"message": "Backfill resumed"}
+    finally:
+        db.close()
+
+
 @app.post("/api/sync/{athlete_id}")
 async def trigger_sync(athlete_id: int, background_tasks: BackgroundTasks):
     """Manually trigger a sync."""
