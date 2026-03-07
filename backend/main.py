@@ -134,6 +134,10 @@ async def run_background_backfill(athlete_id: int):
         task = db.query(BackfillTask).filter_by(athlete_id=athlete_id).first()
         if not task:
             return
+        # Guard: if already running (e.g. zombie from previous instance), reset first
+        if task.status == "running":
+            task.status = "pending"
+            db.commit()
 
         task.status = "running"
         task.updated_at = datetime.utcnow()
@@ -157,6 +161,7 @@ async def run_background_backfill(athlete_id: int):
             db.commit()
 
             for act in pending:
+                delay = BASE_DELAY  # Always defined, even if request fails
                 try:
                     async with httpx.AsyncClient(timeout=30) as client:
                         resp = await client.get(
@@ -165,7 +170,7 @@ async def run_background_backfill(athlete_id: int):
                         )
 
                     if resp.status_code == 429:
-                        # Back off and retry
+                        print(f"[backfill] Rate limited — sleeping 60s")
                         await asyncio.sleep(60)
                         access_token = await get_valid_token(athlete_id, db)
                         continue
@@ -214,9 +219,22 @@ async def run_background_backfill(athlete_id: int):
                             fresh_db.close()
 
                         task.found += 1
+                        print(f"[backfill] Fetched activity {act.id} ({task.checked+1}/{task.total})")
 
-                except Exception:
-                    pass
+                    else:
+                        # 404 = deleted/private, 4xx = permanent failure — mark done to skip
+                        print(f"[backfill] Activity {act.id} returned {resp.status_code} — marking as fetched to skip")
+                        fresh_db = SessionLocal()
+                        try:
+                            fresh_act = fresh_db.query(Activity).filter_by(id=act.id).first()
+                            if fresh_act:
+                                fresh_act.detail_fetched = True
+                                fresh_db.commit()
+                        finally:
+                            fresh_db.close()
+
+                except Exception as e:
+                    print(f"[backfill] Exception on activity {act.id}: {e}")
 
                 task.checked += 1
                 task.updated_at = datetime.utcnow()
@@ -457,9 +475,15 @@ def get_backfill_status(athlete_id: int):
         task = db.query(BackfillTask).filter_by(athlete_id=athlete_id).first()
         if not task:
             return {"status": "none"}
+        # Calculate total dynamically to avoid stale snapshot
+        remaining = db.query(Activity).filter(
+            Activity.athlete_id == athlete_id,
+            Activity.detail_fetched == False,
+        ).count()
+        real_total = task.checked + remaining
         return {
             "status": task.status,
-            "total": task.total,
+            "total": real_total,
             "checked": task.checked,
             "found": task.found,
             "updated_at": task.updated_at.isoformat() if task.updated_at else None,
@@ -469,7 +493,7 @@ def get_backfill_status(athlete_id: int):
 
 
 @app.post("/api/backfill/resume/{athlete_id}")
-async def resume_backfill(athlete_id: int):
+async def resume_backfill(athlete_id: int, background_tasks: BackgroundTasks):
     """Reset a stalled or errored backfill and restart it."""
     db = SessionLocal()
     try:
@@ -481,7 +505,7 @@ async def resume_backfill(athlete_id: int):
         task.status = "pending"
         task.updated_at = datetime.utcnow()
         db.commit()
-        asyncio.create_task(run_background_backfill(athlete_id))
+        background_tasks.add_task(run_background_backfill, athlete_id)
         return {"message": "Backfill resumed"}
     finally:
         db.close()
