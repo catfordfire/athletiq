@@ -126,9 +126,16 @@ def get_db():
 
 
 # ── Background detail backfill ────────────────────────────────────────────────
+backfill_running: set = set()  # in-memory guard against concurrent runs
+
+
 async def run_background_backfill(athlete_id: int):
     """Fetch full detail for all un-fetched activities in the background.
     Runs independently of any browser connection. Resumes if interrupted."""
+    if athlete_id in backfill_running:
+        print(f"[backfill] Already running for athlete {athlete_id} — ignoring duplicate")
+        return
+    backfill_running.add(athlete_id)
     db = SessionLocal()
     try:
         task = db.query(BackfillTask).filter_by(athlete_id=athlete_id).first()
@@ -248,12 +255,14 @@ async def run_background_backfill(athlete_id: int):
         db.commit()
 
     except Exception as e:
+        print(f"[backfill] Fatal error for athlete {athlete_id}: {e}")
         task = db.query(BackfillTask).filter_by(athlete_id=athlete_id).first()
         if task:
             task.status = "error"
             task.updated_at = datetime.utcnow()
             db.commit()
     finally:
+        backfill_running.discard(athlete_id)
         db.close()
 
 
