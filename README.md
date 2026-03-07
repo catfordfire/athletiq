@@ -172,7 +172,7 @@ Athletiq is built on Strava's **free API tier**. This is intentional — no subs
 
 | Feature | Reason | Workaround |
 |---|---|---|
-| Full segment effort history | `/segment_efforts` requires Strava Summit (paid) — returns HTTP 402 on free accounts | History builds automatically as you open activities; use "Find previous efforts" to scan the backlog |
+| Full segment effort history | Strava's `/segment_efforts` endpoint does not return historical efforts retroactively — even with Summit, it only reflects efforts recorded after the API token was active. History is built from locally cached activities for all users | Use the **🔍 Find previous efforts** backfill scan |
 | Segment leaderboards | Restricted endpoint | Not implemented |
 | Athlete heart rate zones | Restricted endpoint | Not implemented |
 
@@ -185,9 +185,25 @@ The Δ vs PR column in the Segments tab is powered by scanning your **locally ca
 - Use the **🔍 Find previous efforts** button on any segment to scan all remaining un-fetched activities in the background
 - A segment marked `🥇 PR` by Strava but showing `–` delta simply means the previous effort hasn't been cached yet — it is a genuine PR
 
-### Strava Summit auto-detection
+### Background detail backfill
 
-Athletiq automatically detects whether you have a Strava Summit subscription from your athlete profile, enabling full segment history without any configuration. This is checked at login time. If your subscription status changes (upgrade or downgrade), click **Connect with Strava** again on the main screen to refresh it — no data is lost when you do this.
+After your initial sync completes, Athletiq automatically queues a background job to fetch full detail (splits, best efforts, segments) for every activity. This runs entirely on the NAS — closing the browser tab doesn't stop it. Progress is shown in the sidebar.
+
+If the server restarts mid-backfill, it resumes automatically on next startup.
+
+**Existing installs** (where initial sync already ran before v1.2.3): seed the task manually and restart:
+
+```bash
+docker exec athletiq-db psql -U velosyno -d athletiq -c \
+  "INSERT INTO backfill_tasks (athlete_id, status, total, checked, found) \
+   VALUES (<your_athlete_id>, 'pending', 0, 0, 0) ON CONFLICT (athlete_id) DO NOTHING;"
+
+docker compose restart backend
+```
+
+
+
+Athletiq automatically detects your Summit subscription status from your athlete profile. In practice, Summit does not unlock additional history features — Strava's `/segment_efforts` endpoint does not return historical efforts retroactively regardless of subscription tier. Segment history is therefore built from locally cached activities for all users via the backfill scan.
 
 ### Rate limits
 

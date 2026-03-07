@@ -91,6 +91,18 @@ class SegmentHistory(Base):
     fetched_at = Column(DateTime, default=datetime.utcnow)
 
 
+class BackfillTask(Base):
+    __tablename__ = "backfill_tasks"
+    id = Column(Integer, primary_key=True, index=True)
+    athlete_id = Column(Integer, unique=True, index=True)
+    status = Column(String, default="pending")   # pending | running | done | error
+    total = Column(Integer, default=0)
+    checked = Column(Integer, default=0)
+    found = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 Base.metadata.create_all(bind=engine)
 
 # ── App ───────────────────────────────────────────────────────────────────────
@@ -109,6 +121,136 @@ def get_db():
     db = SessionLocal()
     try:
         yield db
+    finally:
+        db.close()
+
+
+# ── Background detail backfill ────────────────────────────────────────────────
+async def run_background_backfill(athlete_id: int):
+    """Fetch full detail for all un-fetched activities in the background.
+    Runs independently of any browser connection. Resumes if interrupted."""
+    db = SessionLocal()
+    try:
+        task = db.query(BackfillTask).filter_by(athlete_id=athlete_id).first()
+        if not task:
+            return
+
+        task.status = "running"
+        task.updated_at = datetime.utcnow()
+        db.commit()
+
+        BASE_DELAY = 3.0
+        access_token = await get_valid_token(athlete_id, db)
+
+        while True:
+            # Re-query each iteration so we pick up any newly synced activities
+            pending = db.query(Activity).filter(
+                Activity.athlete_id == athlete_id,
+                Activity.detail_fetched == False,
+            ).order_by(Activity.start_date.asc()).all()
+
+            if not pending:
+                break
+
+            # Update total each pass
+            task.total = task.checked + len(pending)
+            db.commit()
+
+            for act in pending:
+                try:
+                    async with httpx.AsyncClient(timeout=30) as client:
+                        resp = await client.get(
+                            f"{STRAVA_API_BASE}/activities/{act.id}",
+                            headers={"Authorization": f"Bearer {access_token}"},
+                        )
+
+                    if resp.status_code == 429:
+                        # Back off and retry
+                        await asyncio.sleep(60)
+                        access_token = await get_valid_token(athlete_id, db)
+                        continue
+
+                    usage_header = resp.headers.get("X-RateLimit-Usage", "0,0")
+                    short_usage = int(usage_header.split(",")[0]) if "," in usage_header else 0
+                    delay = BASE_DELAY if short_usage < 170 else 10.0
+
+                    if resp.status_code == 200:
+                        data = resp.json()
+
+                        splits = [{"split": s.get("split"), "distance": s.get("distance"),
+                            "moving_time": s.get("moving_time"), "elapsed_time": s.get("elapsed_time"),
+                            "elevation_difference": s.get("elevation_difference"),
+                            "average_heartrate": s.get("average_heartrate"), "pace_zone": s.get("pace_zone")}
+                            for s in data.get("splits_metric", [])]
+
+                        best_efforts = [{"name": b.get("name"), "elapsed_time": b.get("elapsed_time"),
+                            "distance": b.get("distance"), "pr_rank": b.get("pr_rank")}
+                            for b in data.get("best_efforts", [])]
+
+                        segs = []
+                        for se in data.get("segment_efforts", []):
+                            seg = se.get("segment", {})
+                            segs.append({
+                                "segment_id": seg.get("id"), "name": seg.get("name"),
+                                "distance": seg.get("distance"), "average_grade": seg.get("average_grade"),
+                                "elapsed_time": se.get("elapsed_time"), "moving_time": se.get("moving_time"),
+                                "pr_rank": se.get("pr_rank"),
+                                "achievements": [a.get("type_id") for a in se.get("achievements", [])],
+                                "start_latlng": seg.get("start_latlng"), "end_latlng": seg.get("end_latlng"),
+                                "polyline": seg.get("map", {}).get("polyline") or seg.get("map", {}).get("summary_polyline"),
+                            })
+
+                        fresh_db = SessionLocal()
+                        try:
+                            fresh_act = fresh_db.query(Activity).filter_by(id=act.id).first()
+                            if fresh_act:
+                                fresh_act.description = data.get("description") or ""
+                                fresh_act.splits_metric = json.dumps(splits)
+                                fresh_act.best_efforts = json.dumps(best_efforts)
+                                fresh_act.segment_efforts = json.dumps(segs)
+                                fresh_act.detail_fetched = True
+                                fresh_db.commit()
+                        finally:
+                            fresh_db.close()
+
+                        task.found += 1
+
+                except Exception:
+                    pass
+
+                task.checked += 1
+                task.updated_at = datetime.utcnow()
+                db.commit()
+                await asyncio.sleep(delay)
+
+            break  # All pending done
+
+        task.status = "done"
+        task.updated_at = datetime.utcnow()
+        db.commit()
+
+    except Exception as e:
+        task = db.query(BackfillTask).filter_by(athlete_id=athlete_id).first()
+        if task:
+            task.status = "error"
+            task.updated_at = datetime.utcnow()
+            db.commit()
+    finally:
+        db.close()
+
+
+@app.on_event("startup")
+async def resume_pending_backfills():
+    """On server start, resume any backfill tasks that were running or pending."""
+    db = SessionLocal()
+    try:
+        tasks = db.query(BackfillTask).filter(
+            BackfillTask.status.in_(["pending", "running"])
+        ).all()
+        for task in tasks:
+            task.status = "pending"
+            db.commit()
+            asyncio.create_task(run_background_backfill(task.athlete_id))
     finally:
         db.close()
 
@@ -273,6 +415,28 @@ async def sync_all_activities(athlete_id: int):
                 await asyncio.sleep(0.5)  # Rate limit courtesy
 
         sync_progress[athlete_id] = {"status": "complete", "count": total}
+
+        # Auto-trigger background detail backfill on first-ever sync only
+        db2 = SessionLocal()
+        try:
+            existing_task = db2.query(BackfillTask).filter_by(athlete_id=athlete_id).first()
+            if not existing_task and total > 0:
+                pending_count = db2.query(Activity).filter(
+                    Activity.athlete_id == athlete_id,
+                    Activity.detail_fetched == False,
+                ).count()
+                if pending_count > 0:
+                    db2.add(BackfillTask(
+                        athlete_id=athlete_id,
+                        status="pending",
+                        total=pending_count,
+                        checked=0,
+                        found=0,
+                    ))
+                    db2.commit()
+                    asyncio.create_task(run_background_backfill(athlete_id))
+        finally:
+            db2.close()
     except Exception as e:
         sync_progress[athlete_id] = {"status": "error", "error": str(e)}
     finally:
@@ -283,6 +447,25 @@ async def sync_all_activities(athlete_id: int):
 @app.get("/api/status/{athlete_id}")
 def get_sync_status(athlete_id: int):
     return sync_progress.get(athlete_id, {"status": "idle"})
+
+
+@app.get("/api/backfill/status/{athlete_id}")
+def get_backfill_status(athlete_id: int):
+    """Return background detail backfill progress."""
+    db = SessionLocal()
+    try:
+        task = db.query(BackfillTask).filter_by(athlete_id=athlete_id).first()
+        if not task:
+            return {"status": "none"}
+        return {
+            "status": task.status,
+            "total": task.total,
+            "checked": task.checked,
+            "found": task.found,
+            "updated_at": task.updated_at.isoformat() if task.updated_at else None,
+        }
+    finally:
+        db.close()
 
 
 @app.post("/api/sync/{athlete_id}")
@@ -810,8 +993,18 @@ SEGMENT_HISTORY_TTL_DAYS = 7
 async def get_segment_strava_history(athlete_id: int, segment_id: int):
     """Fetch all athlete efforts on a segment directly from Strava (Summit only).
     Results are cached in DB and refreshed after 7 days."""
-    if not STRAVA_SUMMIT:
-        raise HTTPException(403, "Strava Summit subscription required. Set STRAVA_SUMMIT=true in .env to enable.")
+    # Check Summit status — env flag OR athlete profile
+    summit = STRAVA_SUMMIT
+    if not summit:
+        db_check = SessionLocal()
+        try:
+            token = db_check.query(TokenStore).filter_by(athlete_id=athlete_id).first()
+            if token and token.athlete_data:
+                summit = bool(json.loads(token.athlete_data).get("summit", False))
+        finally:
+            db_check.close()
+    if not summit:
+        raise HTTPException(403, "Strava Summit subscription required.")
     db = SessionLocal()
     try:
         # Check cache
@@ -906,9 +1099,10 @@ async def backfill_segment_history(athlete_id: int, segment_id: int):
 
             yield f"data: {json.dumps({'status': 'start', 'total': total})}\n\n"
 
-            # Sequential requests — 6s base delay = 10/min, well within 200/15min limit.
-            # We also read X-RateLimit-Usage headers and back off further if >150/15min used.
-            BASE_DELAY = 6.0
+            # Sequential requests with dynamic throttling based on actual rate limit headers.
+            # Strava allows 200 req/15min regardless of subscription.
+            # Base: 3s between requests (~20/min), backing off only when headers show >150 used.
+            BASE_DELAY = 3.0
 
             access_token = await get_valid_token(athlete_id, db)
 
@@ -927,7 +1121,7 @@ async def backfill_segment_history(athlete_id: int, segment_id: int):
                     # Read rate limit usage headers — back off if >150 used in 15min window
                     usage_header = resp.headers.get("X-RateLimit-Usage", "0,0")
                     short_usage = int(usage_header.split(",")[0]) if "," in usage_header else 0
-                    delay = BASE_DELAY if short_usage < 150 else 15.0
+                    delay = BASE_DELAY if short_usage < 170 else 10.0
 
                     if resp.status_code == 200:
                         data = resp.json()

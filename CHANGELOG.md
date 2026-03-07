@@ -37,6 +37,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.3] - 2026-03-07
+
+### Added
+- **Background detail backfill** — after initial sync completes, Athletiq automatically fetches full activity detail (splits, best efforts, segments) for all activities in the background, server-side. Runs independently of any browser connection; safe to close the tab
+- `backfill_tasks` database table tracks backfill state (`pending` → `running` → `done`) with progress counters
+- `/api/backfill/status/{athlete_id}` endpoint exposes live progress
+- Sidebar progress indicator: shows fetch count, progress bar, and "safe to close this tab" note while running; dismissable completion message when done
+- Server startup hook resumes any interrupted backfill tasks automatically (e.g. after NAS restart)
+
+### Changed
+- Backfill rate limit raised from 6s to 3s base delay (~20 requests/min) with dynamic backoff when `X-RateLimit-Usage` exceeds 170/200 — Strava rate limits are per-application, not per-subscription tier
+
+### Notes
+- The auto-trigger fires only on first-ever sync. Existing installs can seed the task manually via psql then restart the backend (see README)
+
+---
+
+## [1.2.2] - 2026-03-07
+
+### Changed
+- Segment history reverted to cache-based approach for all users — investigation confirmed Strava's `/segment_efforts` endpoint does not return historical efforts retroactively, even with a Summit subscription. The backfill scan remains the correct solution for all users
+- `stravaSummit` flag retained in config endpoint for future use, but no longer changes segment history behaviour
+- README and limitations docs updated to reflect actual Strava API behaviour
+
+---
+
 ## [1.2.1] - 2026-03-06
 
 ### Added

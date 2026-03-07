@@ -390,8 +390,7 @@ function ActivityMapWithSegment({ polyline, activityId, height = 240, segment })
 }
 
 // ── Backfill control component ───────────────────────────────────────────────
-function BackfillControl({ segmentId, backfill, onStart, stravaSummit = false }) {
-  if (stravaSummit) return null; // Summit users get history directly from Strava
+function BackfillControl({ segmentId, backfill, onStart }) {
   const isRunning = backfill && (backfill.status === "start" || backfill.status === "progress");
   const isDone = backfill?.status === "done";
   const isRateLimit = backfill?.status === "rate_limit";
@@ -423,7 +422,7 @@ function BackfillControl({ segmentId, backfill, onStart, stravaSummit = false })
           <div style={{ fontSize: 12, color: "rgba(255,255,255,0.5)", marginBottom: 5 }}>
             Checking activities… {backfill.checked}/{backfill.total} — {backfill.found} found
             <span style={{ color: "rgba(255,255,255,0.25)", marginLeft: 8 }}>
-              (~{Math.ceil((backfill.total - backfill.checked) * 6 / 60)}min remaining)
+              (~{Math.ceil((backfill.total - backfill.checked) * 3 / 60)}min remaining)
             </span>
           </div>
           <div style={{ height: 4, background: "rgba(255,255,255,0.08)", borderRadius: 4, overflow: "hidden" }}>
@@ -473,21 +472,18 @@ function SegmentsPanel({ segments, loading, error, routePolyline, activityId, at
   const backfillRef = useRef(null);
   const pad = compact ? "9px 10px" : "10px 12px";
 
-  // Fetch history when a segment is selected — Summit uses Strava direct, free uses local cache
+  // Fetch history when a segment is selected — always uses local cache
   useEffect(() => {
     if (!selectedSegment?.segment_id) return;
     const sid = selectedSegment.segment_id;
     if (segHistory[sid] !== undefined || historyLoading[sid]) return;
     setHistoryLoading(h => ({ ...h, [sid]: true }));
-    const endpoint = stravaSummit
-      ? `${API}/api/segments/${athleteId}/${sid}/strava_history`
-      : `${API}/api/segments/${athleteId}/${sid}/history`;
-    fetch(endpoint)
+    fetch(`${API}/api/segments/${athleteId}/${sid}/history`)
       .then(r => r.json())
       .then(d => setSegHistory(h => ({ ...h, [sid]: d.efforts || [] })))
       .catch(() => setSegHistory(h => ({ ...h, [sid]: [] })))
       .finally(() => setHistoryLoading(h => ({ ...h, [sid]: false })));
-  }, [selectedSegment, athleteId, stravaSummit]);
+  }, [selectedSegment, athleteId]);
 
   const startBackfill = (segmentId) => {
     if (backfillRef.current) backfillRef.current.close();
@@ -582,21 +578,12 @@ function SegmentsPanel({ segments, loading, error, routePolyline, activityId, at
                     );
                   })}
                 </div>
-                <BackfillControl segmentId={selectedSegment.segment_id} backfill={backfill} onStart={startBackfill} stravaSummit={stravaSummit} />
+                <BackfillControl segmentId={selectedSegment.segment_id} backfill={backfill} onStart={startBackfill} />
               </div>
               ) : (
                 <div>
                   <div style={{ color: "rgba(255,255,255,0.3)", fontSize: 13, marginBottom: 10 }}>No history yet in cache.</div>
-                  <BackfillControl segmentId={selectedSegment.segment_id} backfill={backfill} onStart={startBackfill} stravaSummit={stravaSummit} />
-                  {!stravaSummit && (
-                    <div style={{ fontSize: 11, color: "rgba(255,255,255,0.15)", marginTop: 8 }}>
-                      Strava Summit subscriber? Your subscription is detected at login —
-                      <span
-                        style={{ color: "rgba(0,212,170,0.5)", cursor: "pointer", marginLeft: 4, textDecoration: "underline" }}
-                        onClick={() => window.location.href = `${API}/auth/login`}
-                      >re-connect with Strava</span> to enable full history.
-                    </div>
-                  )}
+                  <BackfillControl segmentId={selectedSegment.segment_id} backfill={backfill} onStart={startBackfill} />
                 </div>
               );
             })()
@@ -2129,6 +2116,7 @@ export default function App() {
   const [actPage, setActPage] = useState(0);
   const [totalActs, setTotalActs] = useState(0);
   const [stravaSummit, setStravaSummit] = useState(false);
+  const [backfillStatus, setBackfillStatus] = useState(null);
 
   // Fetch runtime config — Summit auto-detected from athlete profile
   useEffect(() => {
@@ -2137,6 +2125,21 @@ export default function App() {
       .then(r => r.json())
       .then(d => setStravaSummit(d.strava_summit || false))
       .catch(() => {});
+  }, [athleteId]);
+
+  // Poll background backfill status
+  useEffect(() => {
+    if (!athleteId) return;
+    const poll = async () => {
+      try {
+        const r = await fetch(`${API}/api/backfill/status/${athleteId}`);
+        const d = await r.json();
+        setBackfillStatus(d);
+      } catch {}
+    };
+    poll();
+    const iv = setInterval(poll, 10000);
+    return () => clearInterval(iv);
   }, [athleteId]);
 
   useEffect(() => {
@@ -2254,6 +2257,8 @@ export default function App() {
         ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
         input { color-scheme: dark; }
         select option { background: #1a1f2e; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
       `}</style>
 
       {/* Sidebar */}
@@ -2289,13 +2294,42 @@ export default function App() {
         </nav>
 
         <div style={{ padding: "16px 24px", borderTop: "1px solid rgba(255,255,255,0.07)" }}>
+          {/* Background backfill indicator */}
+          {backfillStatus && backfillStatus.status !== "none" && backfillStatus.status !== "done" && (
+            <div style={{ marginBottom: 10, padding: "10px 12px", borderRadius: 8, background: "rgba(0,212,170,0.06)", border: "1px solid rgba(0,212,170,0.15)" }}>
+              <div style={{ fontSize: 11, color: "#00D4AA", fontWeight: 600, marginBottom: 4 }}>
+                {backfillStatus.status === "running" ? "⟳ Fetching activity details..." : "⏳ Detail fetch queued"}
+              </div>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)" }}>
+                {backfillStatus.checked}/{backfillStatus.total} fetched
+              </div>
+              <div style={{ marginTop: 5, height: 3, background: "rgba(255,255,255,0.08)", borderRadius: 3, overflow: "hidden" }}>
+                <div style={{
+                  height: "100%", borderRadius: 3, background: "#00D4AA",
+                  width: `${backfillStatus.total > 0 ? Math.round((backfillStatus.checked / backfillStatus.total) * 100) : 0}%`,
+                  transition: "width 1s ease",
+                }} />
+              </div>
+              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", marginTop: 4 }}>
+                Runs in background — safe to close this tab
+              </div>
+            </div>
+          )}
+          {backfillStatus?.status === "done" && backfillStatus.checked > 0 && (
+            <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 8, background: "rgba(0,212,170,0.04)", border: "1px solid rgba(0,212,170,0.1)", fontSize: 11, color: "rgba(255,255,255,0.3)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>✓ {backfillStatus.checked} activities fetched</span>
+              <span style={{ cursor: "pointer", opacity: 0.5 }} onClick={() => setBackfillStatus(null)}>×</span>
+            </div>
+          )}
           <button onClick={handleSync} disabled={syncStatus?.status === "syncing"} style={{
             width: "100%", padding: "10px 16px", borderRadius: 10,
             background: syncStatus?.status === "syncing" ? "rgba(255,255,255,0.05)" : "rgba(0,212,170,0.15)",
             border: "1px solid rgba(0,212,170,0.3)", color: "#00D4AA",
             cursor: syncStatus?.status === "syncing" ? "default" : "pointer", fontSize: 13, fontWeight: 600,
           }}>
-            {syncStatus?.status === "syncing" ? `⟳ Syncing... ${syncStatus.count || 0}` : "⟳ Sync Strava"}
+            {syncStatus?.status === "syncing"
+              ? `⟳ Syncing... (${syncStatus.count || 0} imported)`
+              : "⟳ Sync Strava"}
           </button>
           <a
             href={`${API}/api/export/${athleteId}/csv`}
@@ -2347,11 +2381,24 @@ export default function App() {
           {/* Sync banner */}
           {syncStatus?.status === "syncing" && (
             <div style={{ marginBottom: 24, padding: "16px 24px", borderRadius: 12, background: "rgba(0,212,170,0.08)", border: "1px solid rgba(0,212,170,0.25)", display: "flex", alignItems: "center", gap: 16 }}>
-              <div style={{ fontSize: 20 }}>⟳</div>
-              <div>
+              <div style={{ fontSize: 22, animation: "spin 1.2s linear infinite" }}>⟳</div>
+              <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 600, color: "#00D4AA" }}>Syncing your Strava activities...</div>
-                <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 13, marginTop: 2 }}>{syncStatus.count || 0} activities imported so far.</div>
+                <div style={{ color: "rgba(255,255,255,0.4)", fontSize: 13, marginTop: 3 }}>
+                  {syncStatus.count > 0
+                    ? `${syncStatus.count} activit${syncStatus.count === 1 ? "y" : "ies"} imported so far — this may take a moment for large histories.`
+                    : "Connecting to Strava and checking for new activities..."}
+                </div>
               </div>
+            </div>
+          )}
+          {syncStatus?.status === "complete" && (
+            <div style={{ marginBottom: 24, padding: "14px 24px", borderRadius: 12, background: "rgba(0,212,170,0.05)", border: "1px solid rgba(0,212,170,0.15)", display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ fontSize: 18 }}>✓</div>
+              <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 13 }}>
+                Sync complete — {syncStatus.count > 0 ? `${syncStatus.count} activit${syncStatus.count === 1 ? "y" : "ies"} imported.` : "everything is up to date."}
+              </div>
+              <button onClick={() => setSyncStatus(null)} style={{ marginLeft: "auto", background: "none", border: "none", color: "rgba(255,255,255,0.25)", cursor: "pointer", fontSize: 16, lineHeight: 1 }}>×</button>
             </div>
           )}
 
