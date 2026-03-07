@@ -177,8 +177,28 @@ async def run_background_backfill(athlete_id: int):
                         )
 
                     if resp.status_code == 429:
-                        print(f"[backfill] Rate limited — sleeping 60s")
-                        await asyncio.sleep(60)
+                        usage = resp.headers.get("X-RateLimit-Usage", "0,0")
+                        limit = resp.headers.get("X-RateLimit-Limit", "200,2000")
+                        short_used, long_used = (int(x) for x in usage.split(","))
+                        short_limit, long_limit = (int(x) for x in limit.split(","))
+                        print(f"[backfill] Rate limited — usage: {short_used}/{short_limit} (15min), {long_used}/{long_limit} (daily)")
+
+                        if long_used >= long_limit:
+                            # Daily limit hit — sleep until midnight UTC
+                            now = datetime.utcnow()
+                            secs_until_midnight = (24 - now.hour) * 3600 - now.minute * 60 - now.second + 5
+                            print(f"[backfill] Daily limit reached — sleeping {secs_until_midnight}s until midnight UTC")
+                            await asyncio.sleep(secs_until_midnight)
+                        else:
+                            # 15-min window limit — sleep until next boundary (:00, :15, :30, :45)
+                            now = datetime.utcnow()
+                            mins_into_window = now.minute % 15
+                            secs_until_reset = (15 - mins_into_window) * 60 - now.second + 5
+                            if secs_until_reset > 900:
+                                secs_until_reset = 65  # safety fallback
+                            print(f"[backfill] 15-min limit — sleeping {secs_until_reset}s until next window")
+                            await asyncio.sleep(secs_until_reset)
+
                         access_token = await get_valid_token(athlete_id, db)
                         continue
 
