@@ -2325,7 +2325,7 @@ export default function App() {
                   </button>
                 ) : (
                   <div style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", marginTop: 4 }}>
-                    Runs in background — safe to close this tab
+                    Runs in background — safe to close this tab. This will take a while to stay within Strava's API limits, but only happens once.
                   </div>
                 );
               })()}
