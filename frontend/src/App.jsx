@@ -2312,7 +2312,7 @@ export default function App() {
               </div>
               {(() => {
                 const stale = backfillStatus.updated_at &&
-                  (Date.now() - new Date(backfillStatus.updated_at).getTime()) > 5 * 60 * 1000;
+                  (Date.now() - new Date(backfillStatus.updated_at).getTime()) > 60 * 1000;
                 const showResume = backfillStatus.status === "error" || stale;
                 return showResume ? (
                   <button
