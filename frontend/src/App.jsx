@@ -548,7 +548,7 @@ function SegmentsPanel({ segments, loading, error, routePolyline, activityId, at
             (() => {
               const hist = segHistory[selectedSegment.segment_id];
               if (hist === "rate_limit") return (
-                <div style={{ color: "#FFB347", fontSize: 13 }}>⏱ Strava rate limit reached — try again in a minute.</div>
+                <div style={{ color: "#FFB347", fontSize: 13 }}>⏱ API limit reached — try again tomorrow.</div>
               );
               const safeHist = Array.isArray(hist) ? hist : [];
               if (safeHist.length === 0) return (
@@ -2355,6 +2355,11 @@ export default function App() {
                 ) : (
                   <div style={{ fontSize: 10, color: "rgba(255,255,255,0.2)", marginTop: 4 }}>
                     Runs in background — safe to close this tab. This will take a while to stay within Strava's API limits, but only happens once.
+                    {backfillStatus.updated_at && (Date.now() - new Date(backfillStatus.updated_at).getTime()) > 60 * 1000 && (
+                      <div style={{ marginTop: 4, color: "rgba(255,180,70,0.5)" }}>
+                        If progress has stopped, you may have reached Strava's daily API limit (2,000 requests). It resets at midnight UTC — the fetch will resume automatically.
+                      </div>
+                    )}
                   </div>
                 );
               })()}
