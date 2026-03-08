@@ -10,6 +10,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.5] - 2026-03-07
+
+### Changed
+- Sidebar backfill indicator now shows a secondary amber note when progress has been stalled for >60s, explaining that Strava's daily API limit (2,000 requests) may have been reached and that it resets at midnight UTC with automatic resume
+- Segment history rate limit message updated from "try again in a minute" to "API limit reached — try again tomorrow" to better reflect the daily cap reality
+
+---
+
 ## [1.2.4] - 2026-03-07
 
 ### Added
