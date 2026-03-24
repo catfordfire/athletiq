@@ -193,7 +193,7 @@ Click **⟳ Sync Strava** in the sidebar to fetch new activities. By default thi
 
 After your initial sync completes, Athletiq automatically queues a background job to fetch full detail (splits, best efforts, segments) for every activity. This runs entirely on the NAS — closing the browser tab doesn't stop it. Progress is shown in the sidebar.
 
-If the server restarts mid-backfill, it resumes automatically on next startup.
+If the server restarts mid-backfill, it resumes automatically on next startup. If progress stalls, a **↺ Resume** button appears in the sidebar after 60 seconds — no SSH required.
 
 **Existing installs** (where initial sync already ran before v1.2.3): seed the task manually and restart:
 
@@ -205,7 +205,7 @@ docker exec athletiq-db psql -U velosyno -d athletiq -c \
 docker compose restart backend
 ```
 
-
+### Strava Summit
 
 Athletiq automatically detects your Summit subscription status from your athlete profile. In practice, Summit does not unlock additional history features — Strava's `/segment_efforts` endpoint does not return historical efforts retroactively regardless of subscription tier. Segment history is therefore built from locally cached activities for all users via the backfill scan.
 
