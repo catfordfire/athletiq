@@ -399,8 +399,10 @@ async def get_valid_token(athlete_id: int, db: Session) -> str:
 sync_progress = {}
 
 
-async def sync_all_activities(athlete_id: int):
-    """Fetch all activities from Strava and store them."""
+async def sync_all_activities(athlete_id: int, full_sync: bool = False):
+    """Fetch activities from Strava and store them.
+    If full_sync=False (default), only fetches activities since the most recent stored activity.
+    First-time sync always does a full fetch regardless."""
     sync_progress[athlete_id] = {"status": "syncing", "count": 0, "total": None}
     db = SessionLocal()
     try:
@@ -409,12 +411,25 @@ async def sync_all_activities(athlete_id: int):
         per_page = 100
         total = 0
 
+        # Determine after timestamp for incremental sync
+        after_ts = None
+        if not full_sync:
+            latest = db.query(Activity).filter_by(athlete_id=athlete_id)\
+                .order_by(Activity.start_date.desc()).first()
+            if latest:
+                import calendar
+                after_ts = int(calendar.timegm(latest.start_date.timetuple()))
+
         async with httpx.AsyncClient(timeout=30) as client:
             while True:
+                params = {"page": page, "per_page": per_page}
+                if after_ts:
+                    params["after"] = after_ts
+
                 resp = await client.get(
                     f"{STRAVA_API_BASE}/athlete/activities",
                     headers={"Authorization": f"Bearer {access_token}"},
-                    params={"page": page, "per_page": per_page},
+                    params=params,
                 )
                 if resp.status_code == 429:
                     await asyncio.sleep(60)
@@ -541,10 +556,10 @@ async def resume_backfill(athlete_id: int, background_tasks: BackgroundTasks):
 
 
 @app.post("/api/sync/{athlete_id}")
-async def trigger_sync(athlete_id: int, background_tasks: BackgroundTasks):
-    """Manually trigger a sync."""
+async def trigger_sync(athlete_id: int, background_tasks: BackgroundTasks, full: bool = False):
+    """Manually trigger a sync. Pass ?full=true for a complete re-sync from Strava."""
     sync_progress[athlete_id] = {"status": "syncing", "count": 0}
-    background_tasks.add_task(sync_all_activities, athlete_id)
+    background_tasks.add_task(sync_all_activities, athlete_id, full)
     return {"message": "Sync started"}
 
 

@@ -2218,9 +2218,9 @@ export default function App() {
 
   useEffect(() => { if (athleteId) loadData(); }, [loadData]);
 
-  const handleSync = async () => {
+  const handleSync = async (full = false) => {
     setSyncStatus({ status: "syncing", count: 0 });
-    await fetch(`${API}/api/sync/${athleteId}`, { method: "POST" });
+    await fetch(`${API}/api/sync/${athleteId}?full=${full}`, { method: "POST" });
   };
 
   const years = stats?.yearly ? Object.keys(stats.yearly).sort((a, b) => b - a) : [];
@@ -2371,7 +2371,7 @@ export default function App() {
               <span style={{ cursor: "pointer", opacity: 0.5 }} onClick={() => setBackfillStatus(null)}>×</span>
             </div>
           )}
-          <button onClick={handleSync} disabled={syncStatus?.status === "syncing"} style={{
+          <button onClick={() => handleSync(false)} disabled={syncStatus?.status === "syncing"} style={{
             width: "100%", padding: "10px 16px", borderRadius: 10,
             background: syncStatus?.status === "syncing" ? "rgba(255,255,255,0.05)" : "rgba(0,212,170,0.15)",
             border: "1px solid rgba(0,212,170,0.3)", color: "#00D4AA",
@@ -2381,6 +2381,14 @@ export default function App() {
               ? `⟳ Syncing... (${syncStatus.count || 0} imported)`
               : "⟳ Sync Strava"}
           </button>
+          {syncStatus?.status !== "syncing" && (
+            <div
+              onClick={() => handleSync(true)}
+              style={{ textAlign: "center", marginTop: 6, fontSize: 11, color: "rgba(255,255,255,0.2)", cursor: "pointer", textDecoration: "underline" }}
+            >
+              Full re-sync
+            </div>
+          )}
           <a
             href={`${API}/api/export/${athleteId}/csv`}
             download

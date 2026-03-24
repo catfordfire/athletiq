@@ -10,6 +10,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.6] - 2026-03-07
+
+### Added
+- **Incremental sync** — "⟳ Sync Strava" now only fetches activities newer than the most recent one in the database, using Strava's `after=` parameter. Typically completes in 1–2 API calls instead of 10–20
+- **Full re-sync option** — a small "Full re-sync" link below the sync button triggers a complete fetch from Strava when needed (e.g. after data issues or a fresh install)
+- First-time sync (no activities in DB) always performs a full fetch regardless of mode
+
+---
+
 ## [1.2.5] - 2026-03-07
 
 ### Changed

@@ -185,6 +185,10 @@ The Δ vs PR column in the Segments tab is powered by scanning your **locally ca
 - Use the **🔍 Find previous efforts** button on any segment to scan all remaining un-fetched activities in the background
 - A segment marked `🥇 PR` by Strava but showing `–` delta simply means the previous effort hasn't been cached yet — it is a genuine PR
 
+### Syncing
+
+Click **⟳ Sync Strava** in the sidebar to fetch new activities. By default this is an incremental sync — it only requests activities newer than your most recent stored one, typically completing in a second or two. A **Full re-sync** option is available below the button if you need to pull everything from Strava from scratch.
+
 ### Background detail backfill
 
 After your initial sync completes, Athletiq automatically queues a background job to fetch full detail (splits, best efforts, segments) for every activity. This runs entirely on the NAS — closing the browser tab doesn't stop it. Progress is shown in the sidebar.
@@ -207,12 +211,15 @@ Athletiq automatically detects your Summit subscription status from your athlete
 
 ### Rate limits
 
-Strava imposes a limit of **200 requests per 15 minutes** and **2,000 per day** on the free tier. Athletiq manages this carefully:
+Strava imposes a limit of **200 requests per 15 minutes** and **2,000 per day**, per application. These limits apply regardless of subscription tier. Athletiq manages this automatically:
 
 - Normal browsing uses very few requests (one per activity opened)
-- The backfill scan runs at ~10 requests/min with automatic backoff if limits are approached
-- A full backfill of a large history (e.g. 500 un-fetched activities) takes ~50 minutes and should be left running in a background tab
-- If rate limited mid-backfill, a Retry button appears and the scan resumes from where it left off next time
+- The background backfill runs at ~20 requests/min with automatic backoff when the 15-minute limit is approached
+- On a **15-minute limit**, the backfill sleeps until the next reset boundary (`:00`, `:15`, `:30`, or `:45` past the hour)
+- On a **daily limit**, the backfill sleeps until midnight UTC and resumes automatically — no action required
+- A full backfill of a large history (e.g. 1,000 activities) will likely span multiple days due to the daily cap
+- If the backfill stalls, a **↺ Resume** button appears in the sidebar after 60 seconds — no SSH required
+- The sidebar shows an amber note if progress has stopped, reminding you that the daily limit resets at midnight UTC
 
 ---
 
