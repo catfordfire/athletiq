@@ -10,6 +10,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [1.2.7] - 2026-03-07
+
+### Fixed
+- Activity modal no longer scrolls as a whole page — the header, close button (×), and tabs are now always visible. Only the tab content area scrolls within a fixed `60vh` window, so the × is always reachable regardless of how many splits, efforts, or segments an activity has
+
+---
+
 ## [1.2.6] - 2026-03-07
 
 ### Added

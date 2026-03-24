@@ -762,7 +762,7 @@ function ActivityModal({ act, athleteId, stravaSummit, onClose, onOpenDetail }) 
     <div style={{
       position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", zIndex: 1000,
       display: "flex", alignItems: "center", justifyContent: "center",
-      backdropFilter: "blur(8px)", overflowY: "auto", padding: "20px 0",
+      backdropFilter: "blur(8px)", padding: "20px 0",
     }} onClick={onClose}>
       <div style={{
         background: "#161b22", border: "1px solid rgba(255,255,255,0.12)",
@@ -816,6 +816,9 @@ function ActivityModal({ act, athleteId, stravaSummit, onClose, onOpenDetail }) 
             }}>{t.label}</button>
           ))}
         </div>
+
+        {/* ── TAB CONTENT (scrollable) ── */}
+        <div style={{ overflowY: "auto", maxHeight: "60vh" }}>
 
         {/* ── OVERVIEW TAB ── */}
         {tab === "overview" && (
@@ -992,6 +995,8 @@ function ActivityModal({ act, athleteId, stravaSummit, onClose, onOpenDetail }) 
             mapHeight={200}
           />
         )}
+
+        </div>{/* end scrollable tab content */}
       </div>
     </div>
   );
